@@ -418,7 +418,7 @@ def pagina_fila():
     c1, c2 = st.columns(2)
     with c1: data_ini = st.date_input("Data início", value=primeiro_dia_mes())
     with c2: data_fim = st.date_input("Data fim",    value=date.today())
-    c3, c4, c5 = st.columns(3)
+    c3, c4, c5, c6 = st.columns(4)
     with c3: filtro_status  = st.selectbox("Status", ["Pendente","Feito","Todos"])
     with c4: filtro_agente  = st.text_input("Filtrar por agente", "")
     with c5: filtro_assunto = st.text_input("Filtrar por assunto", "")
@@ -428,6 +428,9 @@ def pagina_fila():
         st.info("Nenhum registro encontrado.")
         return
 
+    lideres_fila = sorted(df["lider_final"].dropna().unique().tolist())
+    with c6: filtro_lider_fila = st.selectbox("Liderança", ["Todos"] + lideres_fila)
+
     mask = (df["data_ticket"].dt.date >= data_ini) & (df["data_ticket"].dt.date <= data_fim)
     df   = df[mask]
     if filtro_status != "Todos":
@@ -436,6 +439,8 @@ def pagina_fila():
         df = df[df["agente"].astype(str).str.contains(filtro_agente, case=False, na=False)]
     if filtro_assunto:
         df = df[df["assunto"].astype(str).str.contains(filtro_assunto, case=False, na=False)]
+    if filtro_lider_fila != "Todos":
+        df = df[df["lider_final"] == filtro_lider_fila]
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Total",        len(df))
