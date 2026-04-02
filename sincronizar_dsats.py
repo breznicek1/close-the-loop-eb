@@ -26,6 +26,7 @@ SELECT
     c.humanServiceChannel           AS canal,
     c.contactName                   AS nome_cliente,
     c.contactPhoneNumber            AS telefone,
+    c.humanConversationComment      AS comentario_cliente,
     t.storageAt                     AS data_ticket,
     t.team                          AS fila,
     t.tags                          AS tags
@@ -59,8 +60,19 @@ def sincronizar():
     print("=== Sincronização DSATs ===")
 
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-    existentes_res = sb.table("ctlloop_analise").select("ticket_id").execute()
-    existentes = {str(r["ticket_id"]) for r in (existentes_res.data or [])}
+
+    # Busca existentes em lotes para evitar limite de 1000
+    existentes = set()
+    offset = 0
+    while True:
+        res = sb.table("ctlloop_analise").select("ticket_id").range(offset, offset + 999).execute()
+        if not res.data:
+            break
+        existentes.update(str(r["ticket_id"]) for r in res.data)
+        if len(res.data) < 1000:
+            break
+        offset += 1000
+
     print(f"Já existentes no Supabase: {len(existentes)}")
 
     conn = mysql.connector.connect(
@@ -91,21 +103,22 @@ def sincronizar():
     for d in novos:
         data_ticket = d["data_ticket"].isoformat() if d["data_ticket"] else None
         lote.append({
-            "ticket_id":    str(d["ticket_id"]),
-            "ticket_ref":   str(d["ticket_ref"]) if d["ticket_ref"] else None,
-            "nota":         int(d["nota"]) if d["nota"] else None,
-            "agente":       d["agente"],
-            "canal":        d["canal"],
-            "nome_cliente": d["nome_cliente"],
-            "telefone":     str(d["telefone"]) if d["telefone"] else None,
-            "data_ticket":  data_ticket,
-            "fila":         d["fila"],
-            "assunto":      depara_subtag(d["tags"] or ""),
-            "analise_csat": None,
-            "oportunidade": None,
-            "observacao":   None,
-            "status_ctl":   "Pendente",
-            "lider":        None,
+            "ticket_id":          str(d["ticket_id"]),
+            "ticket_ref":         str(d["ticket_ref"]) if d["ticket_ref"] else None,
+            "nota":               int(d["nota"]) if d["nota"] else None,
+            "agente":             d["agente"],
+            "canal":              d["canal"],
+            "nome_cliente":       d["nome_cliente"],
+            "telefone":           str(d["telefone"]) if d["telefone"] else None,
+            "comentario_cliente": d["comentario_cliente"],
+            "data_ticket":        data_ticket,
+            "fila":               d["fila"],
+            "assunto":            depara_subtag(d["tags"] or ""),
+            "analise_csat":       None,
+            "oportunidade":       None,
+            "observacao":         None,
+            "status_ctl":         "Pendente",
+            "lider":              None,
         })
         if len(lote) >= 100:
             sb.table("ctlloop_analise").insert(lote).execute()
