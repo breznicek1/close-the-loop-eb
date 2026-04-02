@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
+from datetime import date, timedelta
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -67,21 +68,18 @@ OPCOES_OPORTUNIDADE = [
 ]
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
-def depara_fila(team: str, contact_identity: str) -> str:
-    t = (team or "").upper()
-    i = (contact_identity or "").lower()
-    if "VIP" in t:
-        return "VIP"
-    if "suportevup" in i:
-        return "VUPI"
-    if "suporteprd1" in i:
-        return "Core"
-    if "ura" in i:
-        return "URA"
+def depara_fila(team, contact_identity) -> str:
+    t = str(team or "").upper()
+    i = str(contact_identity or "").lower()
+    if "VIP" in t:          return "VIP"
+    if "suportevup" in i:   return "VUPI"
+    if "suporteprd1" in i:  return "Core"
+    if "ura" in i:          return "URA"
     return "Outros"
 
-def limpar_agente(raw: str) -> str:
-    if not raw:
+def limpar_agente(raw) -> str:
+    raw = str(raw or "")
+    if not raw or raw in ("None", "nan"):
         return "—"
     if "%40" in raw:
         raw = raw.split("%40")[0]
@@ -100,6 +98,7 @@ def limpar_data(val) -> str:
 def get_client():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
+@st.cache_data(ttl=300)
 def carregar_fila():
     sb     = get_client()
     todos  = []
@@ -119,14 +118,18 @@ def carregar_fila():
         if len(res.data) < chunk:
             break
         offset += chunk
+
     if not todos:
         return pd.DataFrame()
+
     df = pd.DataFrame(todos)
-    # Depara Fila calculado no front
-    if "fila" in df.columns and "agente" in df.columns:
-        df["depara_fila"] = df.apply(
-            lambda r: depara_fila(r.get("fila", ""), r.get("agente", "")), axis=1
-        )
+
+    df["depara_fila"] = df.apply(
+        lambda r: depara_fila(r.get("fila"), r.get("agente")), axis=1
+    )
+
+    df["data_ticket"] = pd.to_datetime(df["data_ticket"], errors="coerce")
+
     return df
 
 def atualizar_analise(id_registro, analise_csat, oportunidade, observacao, status_ctl, lider):
@@ -138,6 +141,7 @@ def atualizar_analise(id_registro, analise_csat, oportunidade, observacao, statu
         "status_ctl":   status_ctl,
         "lider":        lider,
     }).eq("id", id_registro).execute()
+    st.cache_data.clear()
 
 # ── LOGIN ─────────────────────────────────────────────────────────────────────
 def tela_login():
@@ -164,12 +168,19 @@ def pagina_fila():
     st.title("Fila de DSATs — Close the Loop")
     st.caption(f"Logado como: **{st.session_state['lider']}**")
 
-    c1, c2, c3 = st.columns([2, 2, 2])
+    # Filtros
+    c1, c2 = st.columns(2)
     with c1:
-        filtro_status = st.selectbox("Status", ["Pendente", "Feito", "Todos"])
+        data_ini = st.date_input("Data início", value=date.today() - timedelta(days=30))
     with c2:
-        filtro_agente = st.text_input("Filtrar por agente", "")
+        data_fim = st.date_input("Data fim", value=date.today())
+
+    c3, c4, c5 = st.columns(3)
     with c3:
+        filtro_status = st.selectbox("Status", ["Pendente", "Feito", "Todos"])
+    with c4:
+        filtro_agente = st.text_input("Filtrar por agente", "")
+    with c5:
         filtro_assunto = st.text_input("Filtrar por assunto", "")
 
     df = carregar_fila()
@@ -177,12 +188,19 @@ def pagina_fila():
         st.info("Nenhum registro encontrado.")
         return
 
+    # Aplica filtros
+    mask = (
+        (df["data_ticket"].dt.date >= data_ini) &
+        (df["data_ticket"].dt.date <= data_fim)
+    )
+    df = df[mask]
+
     if filtro_status != "Todos":
         df = df[df["status_ctl"] == filtro_status]
     if filtro_agente:
-        df = df[df["agente"].str.contains(filtro_agente, case=False, na=False)]
+        df = df[df["agente"].astype(str).str.contains(filtro_agente, case=False, na=False)]
     if filtro_assunto:
-        df = df[df["assunto"].str.contains(filtro_assunto, case=False, na=False)]
+        df = df[df["assunto"].astype(str).str.contains(filtro_assunto, case=False, na=False)]
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Total", len(df))
@@ -193,12 +211,12 @@ def pagina_fila():
     for _, row in df.iterrows():
         cor      = "🟢" if row["status_ctl"] == "Feito" else "🔴"
         nota_val = row.get("nota")
-        nota_str = NOTAS_EMOJI.get(int(nota_val), f"⭐ {nota_val}") if nota_val else "—"
+        nota_str = NOTAS_EMOJI.get(int(nota_val), f"⭐ {nota_val}") if pd.notna(nota_val) and nota_val else "—"
         assunto  = row.get("assunto") or "—"
         analise  = row.get("analise_csat") or "—"
         data     = limpar_data(row.get("data_ticket"))
-        agente   = limpar_agente(row.get("agente", ""))
-        fila     = row.get("depara_fila") or row.get("fila") or "—"
+        agente   = limpar_agente(row.get("agente"))
+        fila     = row.get("depara_fila") or "—"
 
         with st.expander(f"{cor} #{row['ticket_id']} — {assunto} — Nota {nota_str} — {data}"):
             col1, col2 = st.columns(2)
@@ -217,9 +235,11 @@ def pagina_fila():
                 st.markdown(f"- **Status:** {row.get('status_ctl') or '—'}")
                 st.markdown(f"- **Líder:** {row.get('lider') or '—'}")
             if st.button("✏️ Preencher análise", key=f"edit_{row['id']}"):
+                row_dict = row.to_dict()
+                row_dict["data_ticket"] = str(row.get("data_ticket"))
                 st.session_state["pagina"]       = "editar"
                 st.session_state["registro_id"]  = row["id"]
-                st.session_state["registro_row"] = row.to_dict()
+                st.session_state["registro_row"] = row_dict
                 st.rerun()
 
 # ── PÁGINA: EDITAR ────────────────────────────────────────────────────────────
@@ -231,20 +251,24 @@ def pagina_editar():
     id_registro = st.session_state.get("registro_id")
 
     nota_val = row.get("nota")
-    nota_str = NOTAS_EMOJI.get(int(nota_val), f"⭐ {nota_val}") if nota_val else "—"
-    data     = limpar_data(row.get("data_ticket"))
-    agente   = limpar_agente(row.get("agente", ""))
-    fila     = row.get("depara_fila") or row.get("fila") or "—"
+    try:
+        nota_str = NOTAS_EMOJI.get(int(nota_val), f"⭐ {nota_val}") if nota_val and str(nota_val) not in ("None","nan") else "—"
+    except:
+        nota_str = "—"
+
+    data   = limpar_data(row.get("data_ticket"))
+    agente = limpar_agente(row.get("agente"))
+    fila   = row.get("depara_fila") or row.get("fila") or "—"
 
     st.markdown("**Dados do ticket**")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Ticket",  f"#{row.get('ticket_id', '—')}")
-    c2.metric("Nota",    nota_str)
-    c3.metric("Data",    data)
+    c1.metric("Ticket", f"#{row.get('ticket_id', '—')}")
+    c2.metric("Nota",   nota_str)
+    c3.metric("Data",   data)
     c4, c5, c6 = st.columns(3)
-    c4.metric("Agente",  agente)
-    c5.metric("Fila",    fila)
-    c6.metric("Canal",   row.get("canal") or "—")
+    c4.metric("Agente", agente)
+    c5.metric("Fila",   fila)
+    c6.metric("Canal",  row.get("canal") or "—")
     st.markdown(f"**Assunto:** {row.get('assunto') or '—'}")
     st.markdown(f"**Cliente:** {row.get('nome_cliente') or '—'}")
 
@@ -256,8 +280,8 @@ def pagina_editar():
         index=OPCOES_CSAT.index(row["analise_csat"]) if row.get("analise_csat") in OPCOES_CSAT else 0
     )
 
-    oport_atual = row.get("oportunidade") or ""
-    oport_idx   = OPCOES_OPORTUNIDADE.index(oport_atual) if oport_atual in OPCOES_OPORTUNIDADE else 0
+    oport_atual  = row.get("oportunidade") or ""
+    oport_idx    = OPCOES_OPORTUNIDADE.index(oport_atual) if oport_atual in OPCOES_OPORTUNIDADE else 0
     oportunidade = st.selectbox("Oportunidade", OPCOES_OPORTUNIDADE, index=oport_idx)
 
     observacao = st.text_area("Observação", value=row.get("observacao") or "", height=80)
