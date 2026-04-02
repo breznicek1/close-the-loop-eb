@@ -23,7 +23,7 @@ SELECT
     c.ticketId                      AS ticket_ref,
     c.humanConversationEvaluation   AS nota,
     c.humanAgent                    AS agente,
-    c.humanServiceChannel           AS canal,
+    c.contactIdentity               AS contact_identity,
     c.contactName                   AS nome_cliente,
     c.contactPhoneNumber            AS telefone,
     c.humanConversationComment      AS comentario_cliente,
@@ -61,7 +61,6 @@ def sincronizar():
 
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # Busca existentes em lotes para evitar limite de 1000
     existentes = set()
     offset = 0
     while True:
@@ -107,7 +106,7 @@ def sincronizar():
             "ticket_ref":         str(d["ticket_ref"]) if d["ticket_ref"] else None,
             "nota":               int(d["nota"]) if d["nota"] else None,
             "agente":             d["agente"],
-            "canal":              d["canal"],
+            "contact_identity":   d["contact_identity"],
             "nome_cliente":       d["nome_cliente"],
             "telefone":           str(d["telefone"]) if d["telefone"] else None,
             "comentario_cliente": d["comentario_cliente"],
