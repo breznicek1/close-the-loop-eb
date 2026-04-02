@@ -123,7 +123,7 @@ def categoria_oportunidade(oport) -> str:
 # ── DEPARA LIDERANÇA ──────────────────────────────────────────────────────────
 @st.cache_data
 def carregar_depara_lideranca():
-    caminho = "depara_lideranca.xlsx"
+    caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)), "depara_lideranca.xlsx")
     if not os.path.exists(caminho):
         return pd.DataFrame()
     df = pd.read_excel(caminho)
