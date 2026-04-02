@@ -68,9 +68,9 @@ OPCOES_OPORTUNIDADE = [
 ]
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
-def depara_fila(team, agente) -> str:
-    t = str(team  or "").upper()
-    i = str(agente or "").lower()
+def depara_fila(team, contact_identity) -> str:
+    t = str(team             or "").upper()
+    i = str(contact_identity or "").lower()
     if "VIP" in t:         return "VIP"
     if "suportevup" in i:  return "VUPI"
     if "suporteprd1" in i: return "Core"
@@ -128,7 +128,7 @@ def carregar_fila():
 
     df = pd.DataFrame(todos)
     df["depara_fila"] = df.apply(
-        lambda r: depara_fila(r.get("fila"), r.get("agente")), axis=1
+        lambda r: depara_fila(r.get("fila"), r.get("contact_identity")), axis=1
     )
     df["data_ticket"] = pd.to_datetime(df["data_ticket"], errors="coerce")
     return df
@@ -192,6 +192,7 @@ def pagina_fila():
         (df["data_ticket"].dt.date <= data_fim)
     )
     df = df[mask]
+
     if filtro_status != "Todos":
         df = df[df["status_ctl"] == filtro_status]
     if filtro_agente:
@@ -206,13 +207,13 @@ def pagina_fila():
     st.markdown("---")
 
     for _, row in df.iterrows():
-        cor     = "🟢" if row["status_ctl"] == "Feito" else "🔴"
-        n_str   = nota_str(row.get("nota"))
-        assunto = row.get("assunto") or "—"
-        analise = row.get("analise_csat") or "—"
-        data    = limpar_data(row.get("data_ticket"))
-        agente  = limpar_agente(row.get("agente"))
-        fila    = row.get("depara_fila") or "—"
+        cor        = "🟢" if row["status_ctl"] == "Feito" else "🔴"
+        n_str      = nota_str(row.get("nota"))
+        assunto    = row.get("assunto") or "—"
+        analise    = row.get("analise_csat") or "—"
+        data       = limpar_data(row.get("data_ticket"))
+        agente     = limpar_agente(row.get("agente"))
+        fila       = row.get("depara_fila") or "—"
         comentario = row.get("comentario_cliente") or "—"
 
         with st.expander(f"{cor} #{row['ticket_id']} — {assunto} — Nota {n_str} — {data}"):
@@ -247,20 +248,20 @@ def pagina_editar():
     row         = st.session_state.get("registro_row", {})
     id_registro = st.session_state.get("registro_id")
 
-    n_str  = nota_str(row.get("nota"))
-    data   = limpar_data(row.get("data_ticket"))
-    agente = limpar_agente(row.get("agente"))
-    fila   = row.get("depara_fila") or row.get("fila") or "—"
+    n_str      = nota_str(row.get("nota"))
+    data       = limpar_data(row.get("data_ticket"))
+    agente     = limpar_agente(row.get("agente"))
+    fila       = row.get("depara_fila") or "—"
     comentario = row.get("comentario_cliente") or "—"
 
     st.markdown("**Dados do ticket**")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Ticket", f"#{row.get('ticket_id', '—')}")
-    c2.metric("Nota",   n_str)
-    c3.metric("Data",   data)
+    c1.metric("Ticket",  f"#{row.get('ticket_id', '—')}")
+    c2.metric("Nota",    n_str)
+    c3.metric("Data",    data)
     c4, c5, c6 = st.columns(3)
-    c4.metric("Agente", agente)
-    c5.metric("Fila",   fila)
+    c4.metric("Agente",  agente)
+    c5.metric("Fila",    fila)
     c6.metric("Cliente", row.get("nome_cliente") or "—")
     st.markdown(f"**Assunto:** {row.get('assunto') or '—'}")
 
