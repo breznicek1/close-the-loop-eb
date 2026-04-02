@@ -77,6 +77,10 @@ OPCOES_OPORTUNIDADE = [
     "Cliente Frustrado – Discordancia do processos operacionais",
 ]
 
+def primeiro_dia_mes():
+    hoje = date.today()
+    return date(hoje.year, hoje.month, 1)
+
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def depara_fila(team, contact_identity) -> str:
     t = str(team             or "").upper()
@@ -107,22 +111,19 @@ def nota_str(val) -> str:
     except:
         return "—"
 
-def categoria_oportunidade(oport: str) -> str:
+def categoria_oportunidade(oport) -> str:
     if not oport or pd.isna(oport):
         return "Sem classificação"
     o = str(oport)
-    if o.startswith("EstrelaBet"):
-        return "EstrelaBet"
-    if o.startswith("Inove"):
-        return "Inove"
-    if o.startswith("Cliente Frustrado"):
-        return "Cliente Discorda"
+    if o.startswith("EstrelaBet"):   return "EstrelaBet"
+    if o.startswith("Inove"):        return "Inove"
+    if o.startswith("Cliente"):      return "Cliente Discorda"
     return "Outros"
 
 # ── DEPARA LIDERANÇA ──────────────────────────────────────────────────────────
 @st.cache_data
 def carregar_depara_lideranca():
-    caminho = "Depara_Liderança_i9.xlsx"
+    caminho = "depara_lideranca.xlsx"
     if not os.path.exists(caminho):
         return pd.DataFrame()
     df = pd.read_excel(caminho)
@@ -161,22 +162,19 @@ def carregar_fila():
         return pd.DataFrame()
 
     df = pd.DataFrame(todos)
-    df["depara_fila"] = df.apply(
-        lambda r: depara_fila(r.get("fila"), r.get("contact_identity")), axis=1
-    )
+    df["depara_fila"]  = df.apply(lambda r: depara_fila(r.get("fila"), r.get("contact_identity")), axis=1)
     df["data_ticket"]  = pd.to_datetime(df["data_ticket"], errors="coerce")
     df["agente_nome"]  = df["agente"].apply(limpar_agente)
     df["cat_oport"]    = df["oportunidade"].apply(categoria_oportunidade)
 
-    # Join com depara liderança
     depara = carregar_depara_lideranca()
     if not depara.empty:
-        df["contact_identity_key"] = df["contact_identity"].str.strip().str.lower()
-        df = df.merge(depara, left_on="contact_identity_key", right_on="contact_identity", how="left", suffixes=("", "_dep"))
-        df["lider_final"] = df["lider_depara"].fillna(df["lider"]).fillna("Não mapeado")
+        df["ci_key"] = df["contact_identity"].str.strip().str.lower()
+        df = df.merge(depara, left_on="ci_key", right_on="contact_identity", how="left", suffixes=("", "_dep"))
+        df["lider_final"]       = df["lider_depara"].fillna("Não mapeado")
         df["nome_agente_final"] = df["nome_agente"].fillna(df["agente_nome"])
     else:
-        df["lider_final"]       = df["lider"].fillna("Não mapeado")
+        df["lider_final"]       = "Não mapeado"
         df["nome_agente_final"] = df["agente_nome"]
 
     return df
@@ -202,11 +200,7 @@ def tela_login():
         senha   = st.text_input("Senha", type="password")
         if st.button("Entrar", use_container_width=True):
             if usuario in USUARIOS and USUARIOS[usuario]["senha"] == senha:
-                st.session_state.update({
-                    "logado":  True,
-                    "usuario": usuario,
-                    "lider":   USUARIOS[usuario]["lider"],
-                })
+                st.session_state.update({"logado": True, "usuario": usuario, "lider": USUARIOS[usuario]["lider"]})
                 st.rerun()
             else:
                 st.error("Usuário ou senha incorretos.")
@@ -216,229 +210,185 @@ def pagina_dashboard():
     st.title("Dashboard — Close the Loop EB")
 
     st.sidebar.markdown("### Filtros")
-    data_ini    = st.sidebar.date_input("Data início", value=date.today() - timedelta(days=30), key="dash_ini")
-    data_fim    = st.sidebar.date_input("Data fim",    value=date.today(), key="dash_fim")
-    filtro_fila = st.sidebar.multiselect("Fila", ["Core", "VIP", "VUPI", "URA", "Outros"], default=[])
-    filtro_lider = st.sidebar.multiselect("Liderança", [], default=[])
+    data_ini  = st.sidebar.date_input("Data início", value=primeiro_dia_mes(), key="dash_ini")
+    data_fim  = st.sidebar.date_input("Data fim",    value=date.today(),       key="dash_fim")
 
     df_full = carregar_fila()
     if df_full.empty:
         st.info("Nenhum dado disponível.")
         return
 
-    # Atualiza opções de líder dinamicamente
-    lideres_disponiveis = sorted(df_full["lider_final"].dropna().unique().tolist())
-    filtro_lider = st.sidebar.multiselect("Liderança", lideres_disponiveis, default=[], key="filtro_lider")
+    filtro_fila  = st.sidebar.multiselect("Fila",       ["Core", "VIP", "VUPI", "URA", "Outros"], default=[])
+    lideres_disp = sorted(df_full["lider_final"].dropna().unique().tolist())
+    filtro_lider = st.sidebar.multiselect("Liderança",  lideres_disp, default=[])
+    filtro_cat   = st.sidebar.multiselect("Categoria Oportunidade", ["EstrelaBet", "Inove", "Cliente Discorda"], default=[])
 
-    filtro_cat_oport = st.sidebar.multiselect(
-        "Categoria Oportunidade",
-        ["EstrelaBet", "Inove", "Cliente Discorda"],
-        default=[]
-    )
-
-    # Aplica filtros
     df = df_full[
         (df_full["data_ticket"].dt.date >= data_ini) &
         (df_full["data_ticket"].dt.date <= data_fim)
     ].copy()
 
-    if filtro_fila:
-        df = df[df["depara_fila"].isin(filtro_fila)]
-    if filtro_lider:
-        df = df[df["lider_final"].isin(filtro_lider)]
+    if filtro_fila:  df = df[df["depara_fila"].isin(filtro_fila)]
+    if filtro_lider: df = df[df["lider_final"].isin(filtro_lider)]
 
-    df_feito = df[df["status_ctl"] == "Feito"].copy()
-
-    if filtro_cat_oport:
-        df_feito_oport = df_feito[df_feito["cat_oport"].isin(filtro_cat_oport)]
-    else:
-        df_feito_oport = df_feito
+    df_feito       = df[df["status_ctl"] == "Feito"].copy()
+    df_feito_oport = df_feito[df_feito["cat_oport"].isin(filtro_cat)] if filtro_cat else df_feito
 
     total     = len(df)
     feitos    = len(df_feito)
     pendentes = total - feitos
     pct_feito = round(feitos / total * 100, 1) if total > 0 else 0
+    qtd_eb    = len(df_feito[df_feito["analise_csat"] == "EstrelaBet"])
+    qtd_inv   = len(df_feito[df_feito["analise_csat"] == "Inove"])
+    pct_eb    = round(qtd_eb  / feitos * 100, 1) if feitos > 0 else 0
+    pct_inv   = round(qtd_inv / feitos * 100, 1) if feitos > 0 else 0
 
-    # ── MÉTRICAS TOPO ──────────────────────────────────────────────────────
+    # ── MÉTRICAS ───────────────────────────────────────────────────────────
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Total DSATs",  total)
     c2.metric("CTL Feitos",   feitos)
     c3.metric("% Feito",      f"{pct_feito}%")
     c4.metric("Pendentes",    pendentes)
-    qtd_eb  = len(df_feito[df_feito["analise_csat"] == "EstrelaBet"])
-    qtd_inv = len(df_feito[df_feito["analise_csat"] == "Inove"])
-    qtd_cd  = len(df_feito[df_feito["analise_csat"] == "Cliente Discorda"])
-    pct_eb  = round(qtd_eb  / feitos * 100, 1) if feitos > 0 else 0
-    pct_inv = round(qtd_inv / feitos * 100, 1) if feitos > 0 else 0
     c5.metric("Oport. EB",    f"{qtd_eb} ({pct_eb}%)")
     c6.metric("Oport. Inove", f"{qtd_inv} ({pct_inv}%)")
-
     st.markdown("---")
 
-    # ── LINHA 1: Donut CSAT + Barras por Fila ──────────────────────────────
+    # ── LINHA 1 ────────────────────────────────────────────────────────────
     col1, col2 = st.columns(2)
-
     with col1:
         st.subheader("Resumo Geral — Análise CSAT")
-        csat_counts = df_feito["analise_csat"].value_counts().reset_index()
-        csat_counts.columns = ["Análise", "Qtd"]
-        if not csat_counts.empty:
-            fig = px.pie(
-                csat_counts, values="Qtd", names="Análise",
-                hole=0.55,
-                color="Análise",
-                color_discrete_map=CORES_CSAT,
-            )
+        csat_c = df_feito["analise_csat"].value_counts().reset_index()
+        csat_c.columns = ["Análise", "Qtd"]
+        if not csat_c.empty:
+            fig = px.pie(csat_c, values="Qtd", names="Análise", hole=0.55,
+                         color="Análise", color_discrete_map=CORES_CSAT)
             fig.update_traces(textposition="outside", textinfo="label+percent+value")
-            fig.update_layout(showlegend=True, margin=dict(t=20, b=20), height=320)
+            fig.update_layout(showlegend=True, margin=dict(t=20,b=20), height=320)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Sem dados de análise CSAT no período.")
+            st.info("Sem dados no período.")
 
     with col2:
         st.subheader("DSATs e CTL por Fila")
-        fila_total = df.groupby("depara_fila").size().reset_index(name="Total DSATs")
-        fila_feito = df_feito.groupby("depara_fila").size().reset_index(name="CTL Feitos")
-        fila_merge = fila_total.merge(fila_feito, on="depara_fila", how="left").fillna(0)
-        fila_merge["CTL Feitos"] = fila_merge["CTL Feitos"].astype(int)
-        fila_merge = fila_merge.sort_values("Total DSATs", ascending=False)
+        ft = df.groupby("depara_fila").size().reset_index(name="Total DSATs")
+        ff = df_feito.groupby("depara_fila").size().reset_index(name="CTL Feitos")
+        fm = ft.merge(ff, on="depara_fila", how="left").fillna(0)
+        fm["CTL Feitos"] = fm["CTL Feitos"].astype(int)
+        fm = fm.sort_values("Total DSATs", ascending=False)
         fig2 = go.Figure()
-        fig2.add_trace(go.Bar(name="Total DSATs", x=fila_merge["depara_fila"], y=fila_merge["Total DSATs"], marker_color="#B5D4F4"))
-        fig2.add_trace(go.Bar(name="CTL Feitos",  x=fila_merge["depara_fila"], y=fila_merge["CTL Feitos"],  marker_color="#1D9E75"))
-        fig2.update_layout(barmode="group", height=320, margin=dict(t=20, b=20), legend=dict(orientation="h"))
+        fig2.add_trace(go.Bar(name="Total DSATs", x=fm["depara_fila"], y=fm["Total DSATs"], marker_color="#B5D4F4"))
+        fig2.add_trace(go.Bar(name="CTL Feitos",  x=fm["depara_fila"], y=fm["CTL Feitos"],  marker_color="#1D9E75"))
+        fig2.update_layout(barmode="group", height=320, margin=dict(t=20,b=20), legend=dict(orientation="h"))
         st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("---")
 
-    # ── LINHA 2: Evolução semanal + Abertura por Líder ─────────────────────
+    # ── LINHA 2 ────────────────────────────────────────────────────────────
     col3, col4 = st.columns(2)
-
     with col3:
         st.subheader("Evolução Semanal — CTL Feitos")
-        df_ev = df_feito.copy()
-        df_ev["semana"] = df_ev["data_ticket"].dt.to_period("W").dt.start_time
-        evolucao = df_ev.groupby(["semana", "analise_csat"]).size().reset_index(name="Qtd")
-        evolucao["semana"] = evolucao["semana"].dt.strftime("%d/%m")
-        if not evolucao.empty:
-            fig3 = px.bar(
-                evolucao, x="semana", y="Qtd", color="analise_csat",
-                color_discrete_map=CORES_CSAT,
-                labels={"semana": "Semana", "Qtd": "Qtd", "analise_csat": "Análise"},
-            )
-            fig3.update_layout(height=320, margin=dict(t=20, b=20), legend=dict(orientation="h"))
+        dev = df_feito.copy()
+        dev["semana"] = dev["data_ticket"].dt.to_period("W").dt.start_time
+        evo = dev.groupby(["semana","analise_csat"]).size().reset_index(name="Qtd")
+        evo["semana"] = evo["semana"].dt.strftime("%d/%m")
+        if not evo.empty:
+            fig3 = px.bar(evo, x="semana", y="Qtd", color="analise_csat",
+                          color_discrete_map=CORES_CSAT,
+                          labels={"semana":"Semana","Qtd":"Qtd","analise_csat":"Análise"})
+            fig3.update_layout(height=320, margin=dict(t=20,b=20), legend=dict(orientation="h"))
             st.plotly_chart(fig3, use_container_width=True)
         else:
             st.info("Sem dados no período.")
 
     with col4:
         st.subheader("Abertura por Liderança")
-        lider_data = df_feito[df_feito["lider_final"] != "Não mapeado"]
-        if not lider_data.empty:
-            lider_csat = lider_data.groupby(["lider_final", "analise_csat"]).size().reset_index(name="Qtd")
-            lider_total = lider_csat.groupby("lider_final")["Qtd"].sum().reset_index(name="Total")
-            lider_csat  = lider_csat.merge(lider_total, on="lider_final")
-            lider_csat["pct"] = (lider_csat["Qtd"] / lider_csat["Total"] * 100).round(1)
-            lider_csat = lider_csat.sort_values("Total", ascending=True)
-            fig4 = px.bar(
-                lider_csat, x="pct", y="lider_final", color="analise_csat",
-                orientation="h",
-                color_discrete_map=CORES_CSAT,
-                labels={"pct": "%", "lider_final": "Líder", "analise_csat": "Análise"},
-                text="Qtd",
-            )
-            fig4.update_layout(height=320, margin=dict(t=20, b=20), legend=dict(orientation="h"), barmode="stack")
+        ld = df_feito[df_feito["lider_final"] != "Não mapeado"]
+        if not ld.empty:
+            lc = ld.groupby(["lider_final","analise_csat"]).size().reset_index(name="Qtd")
+            lt = lc.groupby("lider_final")["Qtd"].sum().reset_index(name="Total")
+            lc = lc.merge(lt, on="lider_final")
+            lc["pct"] = (lc["Qtd"] / lc["Total"] * 100).round(1)
+            lc = lc.sort_values("Total", ascending=True)
+            fig4 = px.bar(lc, x="pct", y="lider_final", color="analise_csat",
+                          orientation="h", color_discrete_map=CORES_CSAT, text="Qtd",
+                          labels={"pct":"%","lider_final":"Líder","analise_csat":"Análise"})
+            fig4.update_layout(height=320, margin=dict(t=20,b=20), legend=dict(orientation="h"), barmode="stack")
             st.plotly_chart(fig4, use_container_width=True)
         else:
-            st.info("Sem dados de liderança mapeados no período.")
+            st.info("Arquivo depara_lideranca.xlsx não encontrado no repositório." if not os.path.exists("depara_lideranca.xlsx") else "Sem dados de liderança mapeados no período.")
 
     st.markdown("---")
 
-    # ── LINHA 3: Top Oportunidades filtradas + Notas ───────────────────────
+    # ── LINHA 3 ────────────────────────────────────────────────────────────
     col5, col6 = st.columns(2)
-
     with col5:
-        cat_label = " / ".join(filtro_cat_oport) if filtro_cat_oport else "Todas"
+        cat_label = " / ".join(filtro_cat) if filtro_cat else "Todas"
         st.subheader(f"Top Oportunidades — {cat_label}")
         oport = df_feito_oport[df_feito_oport["oportunidade"].notna() & (df_feito_oport["oportunidade"] != "")]
-        oport_counts = oport["oportunidade"].value_counts().head(15).reset_index()
-        oport_counts.columns = ["Oportunidade", "Qtd"]
-        oport_counts["Label"] = oport_counts["Oportunidade"].str.replace(
-            r"^(EstrelaBet|Inove|Cliente Frustrado)\s*[-–]\s*", "", regex=True
-        )
-        if not oport_counts.empty:
-            fig5 = px.bar(
-                oport_counts.sort_values("Qtd"), x="Qtd", y="Label",
-                orientation="h",
-                color_discrete_sequence=["#7F77DD"],
-                labels={"Qtd": "Qtd", "Label": ""},
-            )
-            fig5.update_layout(height=420, margin=dict(t=20, b=20, l=10))
+        oc = oport["oportunidade"].value_counts().head(15).reset_index()
+        oc.columns = ["Oportunidade","Qtd"]
+        oc["Label"] = oc["Oportunidade"].str.replace(r"^(EstrelaBet|Inove|Cliente Frustrado)\s*[-–]\s*", "", regex=True)
+        if not oc.empty:
+            fig5 = px.bar(oc.sort_values("Qtd"), x="Qtd", y="Label", orientation="h",
+                          color_discrete_sequence=["#7F77DD"], labels={"Qtd":"Qtd","Label":""})
+            fig5.update_layout(height=420, margin=dict(t=20,b=20,l=10))
             st.plotly_chart(fig5, use_container_width=True)
         else:
-            st.info("Sem oportunidades no período/filtro selecionado.")
+            st.info("Sem oportunidades no período/filtro.")
 
     with col6:
         st.subheader("DSATs por Nota")
-        nota_counts = df["nota"].value_counts().sort_index().reset_index()
-        nota_counts.columns = ["Nota", "Qtd"]
-        nota_counts = nota_counts[nota_counts["Nota"].notna()]
-        nota_counts["Nota"] = nota_counts["Nota"].apply(lambda x: f"Nota {int(x)}")
-        fig6 = px.bar(
-            nota_counts, x="Nota", y="Qtd",
-            color_discrete_sequence=["#D85A30"],
-            labels={"Qtd": "Quantidade"},
-        )
-        fig6.update_layout(height=200, margin=dict(t=20, b=20))
+        nc = df["nota"].value_counts().sort_index().reset_index()
+        nc.columns = ["Nota","Qtd"]
+        nc = nc[nc["Nota"].notna()]
+        nc["Nota"] = nc["Nota"].apply(lambda x: f"Nota {int(x)}")
+        fig6 = px.bar(nc, x="Nota", y="Qtd", color_discrete_sequence=["#D85A30"], labels={"Qtd":"Quantidade"})
+        fig6.update_layout(height=200, margin=dict(t=20,b=20))
         st.plotly_chart(fig6, use_container_width=True)
 
         st.subheader("CTL por Assunto (Top 10)")
-        assunto_counts = df_feito["assunto"].value_counts().head(10).reset_index()
-        assunto_counts.columns = ["Assunto", "Qtd"]
-        fig7 = px.bar(
-            assunto_counts.sort_values("Qtd"), x="Qtd", y="Assunto",
-            orientation="h",
-            color_discrete_sequence=["#1D9E75"],
-            labels={"Qtd": "Qtd", "Assunto": ""},
-        )
-        fig7.update_layout(height=260, margin=dict(t=10, b=10, l=10))
+        ac = df_feito["assunto"].value_counts().head(10).reset_index()
+        ac.columns = ["Assunto","Qtd"]
+        fig7 = px.bar(ac.sort_values("Qtd"), x="Qtd", y="Assunto", orientation="h",
+                      color_discrete_sequence=["#1D9E75"], labels={"Qtd":"Qtd","Assunto":""})
+        fig7.update_layout(height=260, margin=dict(t=10,b=10,l=10))
         st.plotly_chart(fig7, use_container_width=True)
 
     st.markdown("---")
 
     # ── TABELA OPERADORES ──────────────────────────────────────────────────
     st.subheader("Abertura por Operador")
-    op_total = df.groupby("nome_agente_final").size().reset_index(name="Qtd DSAT")
-    op_feito = df_feito.groupby("nome_agente_final").size().reset_index(name="CTL Feito")
-    op_lider = df[["nome_agente_final","lider_final"]].drop_duplicates("nome_agente_final")
-    op_merge = op_total.merge(op_feito, on="nome_agente_final", how="left").fillna(0)
-    op_merge = op_merge.merge(op_lider, on="nome_agente_final", how="left")
-    op_merge["CTL Feito"] = op_merge["CTL Feito"].astype(int)
-    op_merge["% Feito"]   = (op_merge["CTL Feito"] / op_merge["Qtd DSAT"] * 100).round(1).astype(str) + "%"
-    for cat in ["Cliente Discorda", "EstrelaBet", "Inove"]:
-        sub = df_feito[df_feito["analise_csat"] == cat].groupby("nome_agente_final").size().reset_index(name=f"Qtd {cat}")
-        op_merge = op_merge.merge(sub, on="nome_agente_final", how="left").fillna(0)
-        op_merge[f"Qtd {cat}"] = op_merge[f"Qtd {cat}"].astype(int)
-    op_merge = op_merge.sort_values("Qtd DSAT", ascending=False)
-    op_merge.columns = ["Agente", "Qtd DSAT", "CTL Feito", "Líder", "% Feito", "Cli. Discorda", "EstrelaBet", "Inove"]
-    op_merge = op_merge[["Agente", "Líder", "Qtd DSAT", "CTL Feito", "% Feito", "Cli. Discorda", "EstrelaBet", "Inove"]]
-    st.dataframe(op_merge, use_container_width=True, hide_index=True)
+    ot = df.groupby("nome_agente_final").size().reset_index(name="Qtd DSAT")
+    of = df_feito.groupby("nome_agente_final").size().reset_index(name="CTL Feito")
+    ol = df[["nome_agente_final","lider_final"]].drop_duplicates("nome_agente_final")
+    om = ot.merge(of, on="nome_agente_final", how="left").fillna(0)
+    om = om.merge(ol, on="nome_agente_final", how="left")
+    om["CTL Feito"] = om["CTL Feito"].astype(int)
+    om["% Feito"]   = (om["CTL Feito"] / om["Qtd DSAT"] * 100).round(1).astype(str) + "%"
+    for cat in ["Cliente Discorda","EstrelaBet","Inove"]:
+        sub = df_feito[df_feito["analise_csat"]==cat].groupby("nome_agente_final").size().reset_index(name=f"Qtd {cat}")
+        om = om.merge(sub, on="nome_agente_final", how="left").fillna(0)
+        om[f"Qtd {cat}"] = om[f"Qtd {cat}"].astype(int)
+    om = om.sort_values("Qtd DSAT", ascending=False)
+    om.columns = ["Agente","Qtd DSAT","CTL Feito","Líder","% Feito","Cli. Discorda","EstrelaBet","Inove"]
+    om = om[["Agente","Líder","Qtd DSAT","CTL Feito","% Feito","Cli. Discorda","EstrelaBet","Inove"]]
+    st.dataframe(om, use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
     # ── EXTRAÇÃO ────────────────────────────────────────────────────────────
     st.subheader("Extrair dados")
-    col_e1, col_e2 = st.columns(2)
 
     def gerar_excel(df_exp, sheet):
         cols_map = {
-            "ticket_id": "Ticket", "data_ticket": "Data", "depara_fila": "Fila",
-            "nome_agente_final": "Agente", "lider_final": "Líder",
-            "assunto": "Assunto", "nota": "Nota", "status_ctl": "Status",
-            "analise_csat": "Análise CSAT", "oportunidade": "Oportunidade",
-            "observacao": "Observação", "comentario_cliente": "Voz do Cliente",
+            "ticket_id":"Ticket","data_ticket":"Data","depara_fila":"Fila",
+            "nome_agente_final":"Agente","lider_final":"Líder",
+            "assunto":"Assunto","nota":"Nota","status_ctl":"Status",
+            "analise_csat":"Análise CSAT","oportunidade":"Oportunidade",
+            "observacao":"Observação","comentario_cliente":"Voz do Cliente",
         }
         cols = [c for c in cols_map if c in df_exp.columns]
-        out = df_exp[cols].copy()
+        out  = df_exp[cols].copy()
         out["data_ticket"] = pd.to_datetime(out["data_ticket"], errors="coerce").dt.strftime("%Y-%m-%d")
         out.columns = [cols_map[c] for c in cols]
         buf = io.BytesIO()
@@ -446,22 +396,19 @@ def pagina_dashboard():
             out.to_excel(w, index=False, sheet_name=sheet)
         return buf.getvalue()
 
-    with col_e1:
-        st.download_button(
-            "⬇️ Exportar CTL Feitos (.xlsx)",
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("⬇️ Exportar CTL Feitos (.xlsx)",
             data=gerar_excel(df_feito, "CTL Feitos"),
             file_name=f"ctl_feitos_{data_ini}_{data_fim}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-    with col_e2:
-        st.download_button(
-            "⬇️ Exportar Todos DSATs (.xlsx)",
+            use_container_width=True)
+    with c2:
+        st.download_button("⬇️ Exportar Todos DSATs (.xlsx)",
             data=gerar_excel(df, "Todos DSATs"),
             file_name=f"todos_dsats_{data_ini}_{data_fim}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
+            use_container_width=True)
 
 # ── PÁGINA: FILA ──────────────────────────────────────────────────────────────
 def pagina_fila():
@@ -469,17 +416,12 @@ def pagina_fila():
     st.caption(f"Logado como: **{st.session_state['lider']}**")
 
     c1, c2 = st.columns(2)
-    with c1:
-        data_ini = st.date_input("Data início", value=date.today() - timedelta(days=30))
-    with c2:
-        data_fim = st.date_input("Data fim", value=date.today())
+    with c1: data_ini = st.date_input("Data início", value=primeiro_dia_mes())
+    with c2: data_fim = st.date_input("Data fim",    value=date.today())
     c3, c4, c5 = st.columns(3)
-    with c3:
-        filtro_status  = st.selectbox("Status", ["Pendente", "Feito", "Todos"])
-    with c4:
-        filtro_agente  = st.text_input("Filtrar por agente", "")
-    with c5:
-        filtro_assunto = st.text_input("Filtrar por assunto", "")
+    with c3: filtro_status  = st.selectbox("Status", ["Pendente","Feito","Todos"])
+    with c4: filtro_agente  = st.text_input("Filtrar por agente", "")
+    with c5: filtro_assunto = st.text_input("Filtrar por assunto", "")
 
     df = carregar_fila()
     if df.empty:
@@ -487,7 +429,7 @@ def pagina_fila():
         return
 
     mask = (df["data_ticket"].dt.date >= data_ini) & (df["data_ticket"].dt.date <= data_fim)
-    df = df[mask]
+    df   = df[mask]
     if filtro_status != "Todos":
         df = df[df["status_ctl"] == filtro_status]
     if filtro_agente:
@@ -497,8 +439,8 @@ def pagina_fila():
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Total",        len(df))
-    m2.metric("🔴 Pendentes", int((df["status_ctl"] == "Pendente").sum()))
-    m3.metric("🟢 Feitos",    int((df["status_ctl"] == "Feito").sum()))
+    m2.metric("🔴 Pendentes", int((df["status_ctl"]=="Pendente").sum()))
+    m3.metric("🟢 Feitos",    int((df["status_ctl"]=="Feito").sum()))
     st.markdown("---")
 
     for _, row in df.iterrows():
@@ -531,9 +473,7 @@ def pagina_fila():
             if st.button("✏️ Preencher análise", key=f"edit_{row['id']}"):
                 row_dict = row.to_dict()
                 row_dict["data_ticket"] = str(row.get("data_ticket"))
-                st.session_state["pagina"]       = "editar"
-                st.session_state["registro_id"]  = row["id"]
-                st.session_state["registro_row"] = row_dict
+                st.session_state.update({"pagina":"editar","registro_id":row["id"],"registro_row":row_dict})
                 st.rerun()
 
 # ── PÁGINA: EDITAR ────────────────────────────────────────────────────────────
@@ -552,14 +492,14 @@ def pagina_editar():
     comentario = row.get("comentario_cliente") or "—"
 
     st.markdown("**Dados do ticket**")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Ticket",  f"#{row.get('ticket_id', '—')}")
-    c2.metric("Nota",    n_str)
-    c3.metric("Data",    data)
-    c4, c5, c6 = st.columns(3)
-    c4.metric("Agente",  agente)
-    c5.metric("Fila",    fila)
-    c6.metric("Líder",   lider)
+    c1,c2,c3 = st.columns(3)
+    c1.metric("Ticket", f"#{row.get('ticket_id','—')}")
+    c2.metric("Nota",   n_str)
+    c3.metric("Data",   data)
+    c4,c5,c6 = st.columns(3)
+    c4.metric("Agente", agente)
+    c5.metric("Fila",   fila)
+    c6.metric("Líder",  lider)
     st.markdown(f"**Assunto:** {row.get('assunto') or '—'}")
     st.markdown(f"**Cliente:** {row.get('nome_cliente') or '—'}")
 
@@ -569,42 +509,30 @@ def pagina_editar():
     st.markdown("---")
     st.markdown("**Análise close the loop**")
 
-    analise_csat = st.selectbox(
-        "Análise CSAT", OPCOES_CSAT,
-        index=OPCOES_CSAT.index(row["analise_csat"]) if row.get("analise_csat") in OPCOES_CSAT else 0
-    )
+    analise_csat = st.selectbox("Análise CSAT", OPCOES_CSAT,
+        index=OPCOES_CSAT.index(row["analise_csat"]) if row.get("analise_csat") in OPCOES_CSAT else 0)
     oport_atual  = row.get("oportunidade") or ""
     oport_idx    = OPCOES_OPORTUNIDADE.index(oport_atual) if oport_atual in OPCOES_OPORTUNIDADE else 0
     oportunidade = st.selectbox("Oportunidade", OPCOES_OPORTUNIDADE, index=oport_idx)
     observacao   = st.text_area("Observação", value=row.get("observacao") or "", height=80)
-    status_ctl   = st.selectbox(
-        "Status", OPCOES_STATUS,
-        index=OPCOES_STATUS.index(row["status_ctl"]) if row.get("status_ctl") in OPCOES_STATUS else 0
-    )
+    status_ctl   = st.selectbox("Status", OPCOES_STATUS,
+        index=OPCOES_STATUS.index(row["status_ctl"]) if row.get("status_ctl") in OPCOES_STATUS else 0)
 
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         if st.button("💾 Salvar análise", use_container_width=True):
-            atualizar_analise(
-                id_registro, analise_csat,
-                oportunidade, observacao, status_ctl,
-                st.session_state["lider"]
-            )
+            atualizar_analise(id_registro, analise_csat, oportunidade, observacao, status_ctl, st.session_state["lider"])
             st.success("Análise salva!")
             st.session_state["pagina"] = "fila"
             st.rerun()
-    with col2:
+    with c2:
         if st.button("← Voltar", use_container_width=True):
             st.session_state["pagina"] = "fila"
             st.rerun()
 
 # ── ROTEADOR ──────────────────────────────────────────────────────────────────
 def main():
-    st.set_page_config(
-        page_title="Close the Loop — EB",
-        page_icon="🔁",
-        layout="wide"
-    )
+    st.set_page_config(page_title="Close the Loop — EB", page_icon="🔁", layout="wide")
 
     if "logado" not in st.session_state:
         st.session_state["logado"] = False
@@ -631,12 +559,9 @@ def main():
             st.rerun()
 
     pagina = st.session_state["pagina"]
-    if pagina == "dashboard":
-        pagina_dashboard()
-    elif pagina == "fila":
-        pagina_fila()
-    elif pagina == "editar":
-        pagina_editar()
+    if pagina == "dashboard":   pagina_dashboard()
+    elif pagina == "fila":      pagina_fila()
+    elif pagina == "editar":    pagina_editar()
 
 if __name__ == "__main__":
     main()
