@@ -1,8 +1,7 @@
 """
 backfill_contact_identity.py
 Atualiza contact_identity e comentario_cliente nos registros
-já existentes no Supabase que ainda não têm esses campos.
-Roda uma vez manualmente via GitHub Actions.
+sem esse campo usando UPDATE em lote via SQL direto no Supabase.
 """
 
 import os
@@ -19,36 +18,28 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 def buscar_dados_ocean(ticket_ids: list) -> dict:
-    """Busca contact_identity e comentario_cliente para uma lista de sequentialIds."""
     if not ticket_ids:
         return {}
-
     placeholders = ",".join(["%s"] * len(ticket_ids))
     query = f"""
     SELECT
-        t.sequentialId          AS ticket_id,
-        c.contactIdentity       AS contact_identity,
+        t.sequentialId             AS ticket_id,
+        c.contactIdentity          AS contact_identity,
         c.humanConversationComment AS comentario_cliente
     FROM estrelabet.ticketsInfo t
     JOIN estrelabet.conversationLogs c ON c.id = t.conversationId
     WHERE t.sequentialId IN ({placeholders})
     """
-
     conn = mysql.connector.connect(
-        host=MYSQL_HOST,
-        port=MYSQL_PORT,
-        user=MYSQL_USER,
-        password=MYSQL_PASS,
-        database=MYSQL_DB,
-        ssl_disabled=False,
-        connection_timeout=30,
+        host=MYSQL_HOST, port=MYSQL_PORT,
+        user=MYSQL_USER, password=MYSQL_PASS,
+        database=MYSQL_DB, ssl_disabled=False, connection_timeout=30,
     )
     cursor = conn.cursor(dictionary=True)
     cursor.execute(query, ticket_ids)
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
-
     return {str(r["ticket_id"]): r for r in rows}
 
 def backfill():
@@ -56,7 +47,7 @@ def backfill():
 
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # Busca todos os registros sem contact_identity
+    # Busca todos sem contact_identity
     todos = []
     offset = 0
     while True:
@@ -80,28 +71,35 @@ def backfill():
         print("Nada a atualizar.")
         return
 
-    # Processa em lotes de 500 para não sobrecarregar a DigitalOcean
+    # Processa em lotes de 500 da DigitalOcean
     atualizados = 0
     lote_size = 500
 
     for i in range(0, len(todos), lote_size):
         lote = todos[i:i + lote_size]
         ticket_ids = [int(r["ticket_id"]) for r in lote if r["ticket_id"]]
-
         dados = buscar_dados_ocean(ticket_ids)
 
+        # Monta lista para upsert em lote no Supabase
+        updates = []
         for reg in lote:
             tid = str(reg["ticket_id"])
-            if tid not in dados:
-                continue
+            d   = dados.get(tid, {})
+            updates.append({
+                "id":                 reg["id"],
+                "ticket_id":          tid,
+                "contact_identity":   d.get("contact_identity"),
+                "comentario_cliente": d.get("comentario_cliente"),
+            })
 
-            d = dados[tid]
-            sb.table("ctlloop_analise").update({
-                "contact_identity":   d["contact_identity"],
-                "comentario_cliente": d["comentario_cliente"],
-            }).eq("id", reg["id"]).execute()
-            atualizados += 1
+        # Upsert em lote — uma única chamada por lote de 500
+        sb.table("ctlloop_analise").upsert(
+            updates,
+            on_conflict="id",
+            ignore_duplicates=False
+        ).execute()
 
+        atualizados += len(updates)
         print(f"  {atualizados} atualizados...")
 
     print(f"=== Concluído: {atualizados} registros atualizados ===")
