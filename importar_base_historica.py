@@ -1,8 +1,7 @@
 """
 importar_base_historica.py
-Importa a base histórica avaliada (Base_avaliada.xlsx) para o Supabase,
-atualizando os campos analise_csat, oportunidade e observacao nos
-registros já existentes na ctlloop_analise.
+Importa a base histórica avaliada para o Supabase,
+atualizando analise_csat, oportunidade e observacao.
 """
 
 import os
@@ -25,6 +24,10 @@ def importar():
     df["ticket_id"] = df["ticket_id"].astype(str)
     print(f"Registros na base histórica: {len(df)}")
 
+    # Deduplica — mantém última ocorrência de cada ticket_id
+    df = df.drop_duplicates(subset="ticket_id", keep="last")
+    print(f"Registros após deduplicação: {len(df)}")
+
     # Busca todos os ticket_ids existentes no Supabase
     existentes = {}
     offset = 0
@@ -46,20 +49,17 @@ def importar():
     print(f"Registros no Supabase: {len(existentes)}")
 
     # Filtra apenas os que existem no Supabase
-    df_match = df[df["ticket_id"].isin(existentes.keys())].copy()
+    df_match     = df[df["ticket_id"].isin(existentes.keys())].copy()
     df_sem_match = df[~df["ticket_id"].isin(existentes.keys())]
-    print(f"Tickets com match no Supabase: {len(df_match)}")
+    print(f"Tickets com match: {len(df_match)}")
     print(f"Tickets sem match (ignorados): {len(df_sem_match)}")
 
     if df_match.empty:
         print("Nada a importar.")
         return
 
-    # Monta payload para upsert em lote
-    atualizados = 0
-    lote_size   = 500
-    updates     = []
-
+    # Monta payload
+    updates = []
     for _, row in df_match.iterrows():
         tid = str(row["ticket_id"])
         updates.append({
@@ -72,6 +72,8 @@ def importar():
         })
 
     # Upsert em lotes de 500
+    atualizados = 0
+    lote_size   = 500
     for i in range(0, len(updates), lote_size):
         lote = updates[i:i + lote_size]
         sb.table("ctlloop_analise").upsert(
@@ -83,9 +85,6 @@ def importar():
         print(f"  {atualizados} atualizados...")
 
     print(f"=== Concluído: {atualizados} registros importados ===")
-    if len(df_sem_match) > 0:
-        print(f"Tickets ignorados (não encontrados no Supabase): {len(df_sem_match)}")
-        print("Primeiros 10:", df_sem_match["ticket_id"].head(10).tolist())
 
 if __name__ == "__main__":
     importar()
