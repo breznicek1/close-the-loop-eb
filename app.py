@@ -68,13 +68,13 @@ OPCOES_OPORTUNIDADE = [
 ]
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
-def depara_fila(team, contact_identity) -> str:
-    t = str(team or "").upper()
-    i = str(contact_identity or "").lower()
-    if "VIP" in t:          return "VIP"
-    if "suportevup" in i:   return "VUPI"
-    if "suporteprd1" in i:  return "Core"
-    if "ura" in i:          return "URA"
+def depara_fila(team, agente) -> str:
+    t = str(team  or "").upper()
+    i = str(agente or "").lower()
+    if "VIP" in t:         return "VIP"
+    if "suportevup" in i:  return "VUPI"
+    if "suporteprd1" in i: return "Core"
+    if "ura" in i:         return "URA"
     return "Outros"
 
 def limpar_agente(raw) -> str:
@@ -89,9 +89,13 @@ def limpar_agente(raw) -> str:
 
 def limpar_data(val) -> str:
     s = str(val or "")
-    if s in ("", "None", "nan", "NaT"):
+    return "—" if s in ("", "None", "nan", "NaT") else s[:10]
+
+def nota_str(val) -> str:
+    try:
+        return NOTAS_EMOJI.get(int(val), f"⭐ {val}") if pd.notna(val) and val else "—"
+    except:
         return "—"
-    return s[:10]
 
 # ── SUPABASE ──────────────────────────────────────────────────────────────────
 @st.cache_resource
@@ -123,18 +127,14 @@ def carregar_fila():
         return pd.DataFrame()
 
     df = pd.DataFrame(todos)
-
     df["depara_fila"] = df.apply(
         lambda r: depara_fila(r.get("fila"), r.get("agente")), axis=1
     )
-
     df["data_ticket"] = pd.to_datetime(df["data_ticket"], errors="coerce")
-
     return df
 
 def atualizar_analise(id_registro, analise_csat, oportunidade, observacao, status_ctl, lider):
-    sb = get_client()
-    sb.table("ctlloop_analise").update({
+    get_client().table("ctlloop_analise").update({
         "analise_csat": analise_csat,
         "oportunidade": oportunidade,
         "observacao":   observacao,
@@ -168,7 +168,6 @@ def pagina_fila():
     st.title("Fila de DSATs — Close the Loop")
     st.caption(f"Logado como: **{st.session_state['lider']}**")
 
-    # Filtros
     c1, c2 = st.columns(2)
     with c1:
         data_ini = st.date_input("Data início", value=date.today() - timedelta(days=30))
@@ -177,9 +176,9 @@ def pagina_fila():
 
     c3, c4, c5 = st.columns(3)
     with c3:
-        filtro_status = st.selectbox("Status", ["Pendente", "Feito", "Todos"])
+        filtro_status  = st.selectbox("Status", ["Pendente", "Feito", "Todos"])
     with c4:
-        filtro_agente = st.text_input("Filtrar por agente", "")
+        filtro_agente  = st.text_input("Filtrar por agente", "")
     with c5:
         filtro_assunto = st.text_input("Filtrar por assunto", "")
 
@@ -188,13 +187,11 @@ def pagina_fila():
         st.info("Nenhum registro encontrado.")
         return
 
-    # Aplica filtros
     mask = (
         (df["data_ticket"].dt.date >= data_ini) &
         (df["data_ticket"].dt.date <= data_fim)
     )
     df = df[mask]
-
     if filtro_status != "Todos":
         df = df[df["status_ctl"] == filtro_status]
     if filtro_agente:
@@ -203,30 +200,30 @@ def pagina_fila():
         df = df[df["assunto"].astype(str).str.contains(filtro_assunto, case=False, na=False)]
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Total", len(df))
+    m1.metric("Total",        len(df))
     m2.metric("🔴 Pendentes", int((df["status_ctl"] == "Pendente").sum()))
     m3.metric("🟢 Feitos",    int((df["status_ctl"] == "Feito").sum()))
     st.markdown("---")
 
     for _, row in df.iterrows():
-        cor      = "🟢" if row["status_ctl"] == "Feito" else "🔴"
-        nota_val = row.get("nota")
-        nota_str = NOTAS_EMOJI.get(int(nota_val), f"⭐ {nota_val}") if pd.notna(nota_val) and nota_val else "—"
-        assunto  = row.get("assunto") or "—"
-        analise  = row.get("analise_csat") or "—"
-        data     = limpar_data(row.get("data_ticket"))
-        agente   = limpar_agente(row.get("agente"))
-        fila     = row.get("depara_fila") or "—"
+        cor     = "🟢" if row["status_ctl"] == "Feito" else "🔴"
+        n_str   = nota_str(row.get("nota"))
+        assunto = row.get("assunto") or "—"
+        analise = row.get("analise_csat") or "—"
+        data    = limpar_data(row.get("data_ticket"))
+        agente  = limpar_agente(row.get("agente"))
+        fila    = row.get("depara_fila") or "—"
+        comentario = row.get("comentario_cliente") or "—"
 
-        with st.expander(f"{cor} #{row['ticket_id']} — {assunto} — Nota {nota_str} — {data}"):
+        with st.expander(f"{cor} #{row['ticket_id']} — {assunto} — Nota {n_str} — {data}"):
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**Dados do ticket**")
                 st.markdown(f"- **Agente:** {agente}")
                 st.markdown(f"- **Fila:** {fila}")
-                st.markdown(f"- **Canal:** {row.get('canal') or '—'}")
                 st.markdown(f"- **Cliente:** {row.get('nome_cliente') or '—'}")
-                st.markdown(f"- **Nota:** {nota_str}")
+                st.markdown(f"- **Nota:** {n_str}")
+                st.markdown(f"- **Voz do cliente:** {comentario}")
             with col2:
                 st.markdown("**Análise close the loop**")
                 st.markdown(f"- **Análise CSAT:** {analise}")
@@ -250,27 +247,25 @@ def pagina_editar():
     row         = st.session_state.get("registro_row", {})
     id_registro = st.session_state.get("registro_id")
 
-    nota_val = row.get("nota")
-    try:
-        nota_str = NOTAS_EMOJI.get(int(nota_val), f"⭐ {nota_val}") if nota_val and str(nota_val) not in ("None","nan") else "—"
-    except:
-        nota_str = "—"
-
+    n_str  = nota_str(row.get("nota"))
     data   = limpar_data(row.get("data_ticket"))
     agente = limpar_agente(row.get("agente"))
     fila   = row.get("depara_fila") or row.get("fila") or "—"
+    comentario = row.get("comentario_cliente") or "—"
 
     st.markdown("**Dados do ticket**")
     c1, c2, c3 = st.columns(3)
     c1.metric("Ticket", f"#{row.get('ticket_id', '—')}")
-    c2.metric("Nota",   nota_str)
+    c2.metric("Nota",   n_str)
     c3.metric("Data",   data)
     c4, c5, c6 = st.columns(3)
     c4.metric("Agente", agente)
     c5.metric("Fila",   fila)
-    c6.metric("Canal",  row.get("canal") or "—")
+    c6.metric("Cliente", row.get("nome_cliente") or "—")
     st.markdown(f"**Assunto:** {row.get('assunto') or '—'}")
-    st.markdown(f"**Cliente:** {row.get('nome_cliente') or '—'}")
+
+    if comentario and comentario != "—":
+        st.info(f"💬 **Voz do cliente:** {comentario}")
 
     st.markdown("---")
     st.markdown("**Análise close the loop**")
