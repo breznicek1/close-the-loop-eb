@@ -169,8 +169,8 @@ def carregar_fila():
 
     depara = carregar_depara_lideranca()
     if not depara.empty:
-        df["ci_key"] = df["contact_identity"].str.strip().str.lower()
-        df = df.merge(depara, left_on="ci_key", right_on="contact_identity", how="left", suffixes=("", "_dep"))
+        df["agente_key"] = df["agente"].str.strip().str.lower()
+        df = df.merge(depara, left_on="agente_key", right_on="contact_identity", how="left", suffixes=("", "_dep"))
         df["lider_final"]       = df["lider_depara"].fillna("Não mapeado")
         df["nome_agente_final"] = df["nome_agente"].fillna(df["agente_nome"])
     else:
