@@ -8,8 +8,12 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 USUARIOS = {
-    "gestor":    {"senha": "ctl2026", "lider": "geral"},
-    "admin":     {"senha": "admin2026", "lider": "STAFF I9"},
+    "fernanda":  {"senha": "ctl2025", "lider": "Fernanda Gonçalves"},
+    "isabel":    {"senha": "ctl2025", "lider": "Isabel Silva"},
+    "marcelo":   {"senha": "ctl2025", "lider": "Marcelo EB"},
+    "mateus":    {"senha": "ctl2025", "lider": "Mateus Santana"},
+    "robert":    {"senha": "ctl2025", "lider": "Robert Borges"},
+    "admin":     {"senha": "admin2025", "lider": "STAFF I9"},
 }
 
 OPCOES_CSAT = ["Cliente Discorda", "EstrelaBet", "Inove"]
