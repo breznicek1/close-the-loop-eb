@@ -358,6 +358,87 @@ def pagina_dashboard():
         fig7.update_layout(height=260, margin=dict(t=10,b=10,l=10))
         st.plotly_chart(fig7, use_container_width=True)
 
+
+    st.markdown("---")
+
+    # ── INSIGHTS ───────────────────────────────────────────────────────────
+    st.subheader("💡 Insights do período")
+
+    col_i1, col_i2, col_i3 = st.columns(3)
+
+    # --- OFENSORES ---
+    with col_i1:
+        st.markdown("#### 🔴 Ofensores")
+        min_dsats = 3
+        op_ofens = df.groupby("nome_agente_final").size().reset_index(name="DSATs")
+        op_feito_o = df_feito.groupby("nome_agente_final").size().reset_index(name="Feitos")
+        op_ofens = op_ofens.merge(op_feito_o, on="nome_agente_final", how="left").fillna(0)
+        op_ofens["Feitos"] = op_ofens["Feitos"].astype(int)
+        op_ofens["% CTL"] = (op_ofens["Feitos"] / op_ofens["DSATs"] * 100).round(1)
+        op_ofens = op_ofens[op_ofens["DSATs"] >= min_dsats].sort_values("% CTL").head(5)
+        if op_ofens.empty:
+            st.info("Sem dados suficientes.")
+        else:
+            for _, r in op_ofens.iterrows():
+                cor = "🔴" if r["% CTL"] < 50 else "🟡"
+                st.markdown(f"{cor} **{r['nome_agente_final']}**")
+                st.caption(f"{r['DSATs']} DSATs — {r['Feitos']} feitos — {r['% CTL']}% CTL")
+
+    # --- DESTAQUES ---
+    with col_i2:
+        st.markdown("#### 🟢 Destaques")
+        op_dest = df.groupby("nome_agente_final").size().reset_index(name="DSATs")
+        op_feito_d = df_feito.groupby("nome_agente_final").size().reset_index(name="Feitos")
+        op_dest = op_dest.merge(op_feito_d, on="nome_agente_final", how="left").fillna(0)
+        op_dest["Feitos"] = op_dest["Feitos"].astype(int)
+        op_dest["% CTL"] = (op_dest["Feitos"] / op_dest["DSATs"] * 100).round(1)
+        op_dest = op_dest[op_dest["DSATs"] >= min_dsats].sort_values("% CTL", ascending=False).head(5)
+        if op_dest.empty:
+            st.info("Sem dados suficientes.")
+        else:
+            for _, r in op_dest.iterrows():
+                cor = "🟢" if r["% CTL"] >= 80 else "🟡"
+                st.markdown(f"{cor} **{r['nome_agente_final']}**")
+                st.caption(f"{r['DSATs']} DSATs — {r['Feitos']} feitos — {r['% CTL']}% CTL")
+
+    # --- COMPARATIVO SEMANAL ---
+    with col_i3:
+        st.markdown("#### 📊 Comparativo semanal")
+        hoje = pd.Timestamp.now(tz="America/Sao_Paulo")
+        ini_sem_atual  = (hoje - pd.Timedelta(days=hoje.weekday())).normalize()
+        ini_sem_ant    = ini_sem_atual - pd.Timedelta(weeks=1)
+        fim_sem_ant    = ini_sem_atual - pd.Timedelta(days=1)
+
+        df_full_tz = df_full.copy()
+
+        sem_atual = df_full_tz[df_full_tz["data_ticket"] >= ini_sem_atual]
+        sem_ant   = df_full_tz[(df_full_tz["data_ticket"] >= ini_sem_ant) & (df_full_tz["data_ticket"] <= fim_sem_ant)]
+
+        def resumo(d):
+            total = len(d)
+            feito = len(d[d["status_ctl"] == "Feito"])
+            pct   = round(feito / total * 100, 1) if total > 0 else 0
+            return total, feito, pct
+
+        t_a, f_a, p_a = resumo(sem_atual)
+        t_ant, f_ant, p_ant = resumo(sem_ant)
+
+        delta_t = t_a - t_ant
+        delta_f = f_a - f_ant
+        delta_p = round(p_a - p_ant, 1)
+
+        st.metric("DSATs semana atual",   t_a,  delta=f"{delta_t:+d} vs semana ant.")
+        st.metric("CTL feitos",           f_a,  delta=f"{delta_f:+d} vs semana ant.")
+        st.metric("% CTL",                f"{p_a}%", delta=f"{delta_p:+.1f}pp vs semana ant.")
+
+        # top oport semana atual
+        top_oport = sem_atual[sem_atual["status_ctl"]=="Feito"]["oportunidade"].value_counts().head(3)
+        if not top_oport.empty:
+            st.markdown("**Top oportunidades esta semana:**")
+            for o, q in top_oport.items():
+                label = str(o).replace("EstrelaBet - ","").replace("Inove - ","").replace("Cliente Frustrado – ","")
+                st.caption(f"• {label}: {q}")
+
     st.markdown("---")
 
     # ── TABELA OPERADORES ──────────────────────────────────────────────────
