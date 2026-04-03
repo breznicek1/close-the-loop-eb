@@ -14,6 +14,10 @@ SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 USUARIOS = {
     "gestao": {"senha": "ctl2026",    "lider": "Geral"},
     "admin":  {"senha": "Henry@2026", "lider": "Admin"},
+    "robert.borges":  {"senha": "Estrela123", "lider": "Robert Borges"},
+    "mateus.santana":  {"senha": "Estrela123", "lider": "Mateus Santana"},
+    "isabel.silva":  {"senha": "Estrela123", "lider": "Isabel Silva"},
+    "fernanda.goncalves":  {"senha": "Estrela123", "lider": "Fernanda Goncalves"},
 }
 
 OPCOES_CSAT   = ["Cliente Discorda", "EstrelaBet", "Inove"]
@@ -163,7 +167,7 @@ def carregar_fila():
 
     df = pd.DataFrame(todos)
     df["depara_fila"]  = df.apply(lambda r: depara_fila(r.get("fila"), r.get("contact_identity")), axis=1)
-    df["data_ticket"]  = pd.to_datetime(df["data_ticket"], errors="coerce")
+    df["data_ticket"]  = pd.to_datetime(df["data_ticket"], errors="coerce").dt.tz_convert("America/Sao_Paulo")
     df["agente_nome"]  = df["agente"].apply(limpar_agente)
     df["cat_oport"]    = df["oportunidade"].apply(categoria_oportunidade)
 
