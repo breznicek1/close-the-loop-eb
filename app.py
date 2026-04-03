@@ -465,7 +465,9 @@ def pagina_dashboard():
         st.metric("Tickets com voz do cliente", len(df_voz))
         st.metric("Sem comentário", feitos - len(df_voz))
 
-        if not df_voz.empty and ANTHROPIC_KEY:
+        usuario_atual = st.session_state.get("usuario", "")
+        pode_usar_ia = usuario_atual in ("gestao", "admin") and ANTHROPIC_KEY
+        if not df_voz.empty and pode_usar_ia:
             if st.button("🤖 Gerar análise com IA", use_container_width=True):
                 with st.spinner("Analisando observações e comentários..."):
                     amostra_obs  = df_voz["observacao"].dropna().head(50).tolist()
@@ -513,6 +515,8 @@ Seja direto, use linguagem executiva. Máximo 400 palavras."""
                         st.error(f"Erro na API: {resp.status_code}")
         elif not ANTHROPIC_KEY:
             st.warning("Configure ANTHROPIC_KEY nos secrets do Streamlit para habilitar análise com IA.")
+        elif not df_voz.empty and not pode_usar_ia:
+            st.info("Análise com IA disponível apenas para gestão e admin.")
 
     with col_v2:
         if "analise_voz" in st.session_state:
