@@ -3,28 +3,24 @@ enviar_relatorio_semanal.py
 Envia e-mail toda quinta-feira às 8h BRT com:
 - Base CTL do mês em Excel (anexo)
 - Principais insights de negócio no corpo do e-mail
-Via Outlook SMTP corporativo.
+Via SendGrid (gratuito até 100 e-mails/dia).
 """
 
 import os
 import io
-import smtplib
+import base64
+import json
+import urllib.request
 import pandas as pd
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
+from datetime import date
 from supabase import create_client
-from datetime import date, datetime
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-SUPABASE_URL  = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY  = os.environ.get("SUPABASE_KEY")
-EMAIL_USER    = os.environ.get("EMAIL_USER")    # ex: bruno.machado@i9xc.com
-EMAIL_PASS    = os.environ.get("EMAIL_PASS")    # senha ou app password
-EMAIL_TO      = os.environ.get("EMAIL_TO")      # destinatários separados por vírgula
-SMTP_HOST     = os.environ.get("SMTP_HOST", "smtp.office365.com")
-SMTP_PORT     = int(os.environ.get("SMTP_PORT", 587))
+SUPABASE_URL   = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY   = os.environ.get("SUPABASE_KEY")
+SENDGRID_KEY   = os.environ.get("SENDGRID_KEY")
+EMAIL_FROM     = os.environ.get("EMAIL_FROM", "bruno.machado@i9xc.com")
+EMAIL_TO       = os.environ.get("EMAIL_TO")
 
 # ── BUSCA DADOS ───────────────────────────────────────────────────────────────
 def buscar_dados():
@@ -32,12 +28,7 @@ def buscar_dados():
     todos = []
     offset = 0
     while True:
-        res = (
-            sb.table("ctlloop_analise")
-            .select("*")
-            .range(offset, offset + 999)
-            .execute()
-        )
+        res = sb.table("ctlloop_analise").select("*").range(offset, offset + 999).execute()
         if not res.data:
             break
         todos.extend(res.data)
@@ -92,10 +83,10 @@ def gerar_excel(df):
         out.to_excel(w, index=False, sheet_name="CTL do Mês")
     return buf.getvalue()
 
-# ── GERA INSIGHTS ─────────────────────────────────────────────────────────────
+# ── GERA INSIGHTS HTML ────────────────────────────────────────────────────────
 def gerar_insights(df, df_mes):
-    hoje       = date.today()
-    ini_sem_a  = hoje - pd.Timedelta(days=hoje.weekday())
+    hoje        = date.today()
+    ini_sem_a   = hoje - pd.Timedelta(days=hoje.weekday())
     ini_sem_ant = ini_sem_a - pd.Timedelta(weeks=1)
     fim_sem_ant = ini_sem_a - pd.Timedelta(days=1)
 
@@ -110,7 +101,7 @@ def gerar_insights(df, df_mes):
         pct   = round(feito / total * 100, 1) if total > 0 else 0
         return total, feito, pct
 
-    t_a, f_a, p_a     = resumo(sem_a)
+    t_a,   f_a,   p_a   = resumo(sem_a)
     t_ant, f_ant, p_ant = resumo(sem_ant)
     t_mes, f_mes, p_mes = resumo(df_mes)
 
@@ -118,73 +109,184 @@ def gerar_insights(df, df_mes):
     delta_f = f_a - f_ant
     delta_p = round(p_a - p_ant, 1)
 
-    # Top oportunidades do mês
-    top_oport = (
-        df_mes[df_mes["status_ctl"] == "Feito"]["oportunidade"]
-        .value_counts().head(5)
-    )
+    top_oport = df_mes[df_mes["status_ctl"] == "Feito"]["oportunidade"].value_counts().head(5)
 
-    # Ofensores (mín 3 DSATs, menor % CTL)
-    op = df_mes.groupby("agente_nome").size().reset_index(name="DSATs")
-    of = df_mes[df_mes["status_ctl"]=="Feito"].groupby("agente_nome").size().reset_index(name="Feitos")
-    op = op.merge(of, on="agente_nome", how="left").fillna(0)
+    op  = df_mes.groupby("agente_nome").size().reset_index(name="DSATs")
+    ofe = df_mes[df_mes["status_ctl"]=="Feito"].groupby("agente_nome").size().reset_index(name="Feitos")
+    op  = op.merge(ofe, on="agente_nome", how="left").fillna(0)
     op["Feitos"] = op["Feitos"].astype(int)
-    op["pct"] = (op["Feitos"] / op["DSATs"] * 100).round(1)
+    op["pct"]    = (op["Feitos"] / op["DSATs"] * 100).round(1)
     ofensores  = op[op["DSATs"] >= 3].sort_values("pct").head(3)
     destaques  = op[op["DSATs"] >= 3].sort_values("pct", ascending=False).head(3)
 
-    # CSAT breakdown mês
     csat = df_mes[df_mes["status_ctl"]=="Feito"]["analise_csat"].value_counts()
 
-    lines = []
-    lines.append(f"<h2 style='color:#1F4E8C'>📊 Relatório CTL — Semana {hoje.strftime('%d/%m/%Y')}</h2>")
-    lines.append(f"<p>Olá! Segue o resumo semanal do Close the Loop EstrelaBet.</p>")
+    seta = lambda v: "▲" if v > 0 else ("▼" if v < 0 else "—")
 
-    lines.append("<h3 style='color:#1F4E8C'>📅 Comparativo semanal</h3>")
-    lines.append("<table style='border-collapse:collapse;width:100%'>")
-    lines.append("<tr style='background:#D6E4F0'><th style='padding:8px;text-align:left'>Métrica</th><th>Semana atual</th><th>Semana anterior</th><th>Variação</th></tr>")
-    lines.append(f"<tr><td style='padding:6px'>DSATs</td><td style='text-align:center'>{t_a}</td><td style='text-align:center'>{t_ant}</td><td style='text-align:center'>{'▲' if delta_t>0 else '▼'} {abs(delta_t)}</td></tr>")
-    lines.append(f"<tr style='background:#F5F5F5'><td style='padding:6px'>CTL Feitos</td><td style='text-align:center'>{f_a}</td><td style='text-align:center'>{f_ant}</td><td style='text-align:center'>{'▲' if delta_f>0 else '▼'} {abs(delta_f)}</td></tr>")
-    lines.append(f"<tr><td style='padding:6px'>% CTL</td><td style='text-align:center'>{p_a}%</td><td style='text-align:center'>{p_ant}%</td><td style='text-align:center'>{'▲' if delta_p>0 else '▼'} {abs(delta_p)}pp</td></tr>")
-    lines.append("</table>")
+    html = f"""
+<html><body style="font-family:Arial,sans-serif;max-width:700px;margin:auto;color:#333">
 
-    lines.append("<h3 style='color:#1F4E8C'>📆 Resumo do mês</h3>")
-    lines.append(f"<p>Total DSATs: <b>{t_mes}</b> | CTL Feitos: <b>{f_mes}</b> | % CTL: <b>{p_mes}%</b></p>")
-    lines.append("<table style='border-collapse:collapse;width:60%'>")
-    lines.append("<tr style='background:#D6E4F0'><th style='padding:8px;text-align:left'>Análise CSAT</th><th>Qtd</th><th>%</th></tr>")
-    for cat, qtd in csat.items():
+<div style="background:#1F4E8C;padding:20px;border-radius:8px 8px 0 0">
+  <h1 style="color:white;margin:0;font-size:20px">🔁 Close the Loop — EstrelaBet</h1>
+  <p style="color:#B5D4F4;margin:4px 0 0">Relatório Semanal — {hoje.strftime('%d/%m/%Y')}</p>
+</div>
+
+<div style="background:#F5F5F5;padding:16px;border-radius:0 0 8px 8px">
+
+  <h2 style="color:#1F4E8C;border-bottom:2px solid #1F4E8C;padding-bottom:6px">📆 Resumo do mês</h2>
+  <table style="width:100%;border-collapse:collapse">
+    <tr style="background:#D6E4F0">
+      <th style="padding:10px;text-align:left">Métrica</th>
+      <th style="padding:10px;text-align:center">Valor</th>
+    </tr>
+    <tr><td style="padding:8px">Total DSATs</td><td style="text-align:center"><b>{t_mes}</b></td></tr>
+    <tr style="background:#EEF4FB"><td style="padding:8px">CTL Feitos</td><td style="text-align:center"><b>{f_mes}</b></td></tr>
+    <tr><td style="padding:8px">% CTL</td><td style="text-align:center"><b>{p_mes}%</b></td></tr>
+  </table>
+
+  <h2 style="color:#1F4E8C;border-bottom:2px solid #1F4E8C;padding-bottom:6px;margin-top:24px">📅 Comparativo semanal</h2>
+  <table style="width:100%;border-collapse:collapse">
+    <tr style="background:#D6E4F0">
+      <th style="padding:10px;text-align:left">Métrica</th>
+      <th style="padding:10px;text-align:center">Semana atual</th>
+      <th style="padding:10px;text-align:center">Semana anterior</th>
+      <th style="padding:10px;text-align:center">Variação</th>
+    </tr>
+    <tr>
+      <td style="padding:8px">DSATs</td>
+      <td style="text-align:center">{t_a}</td>
+      <td style="text-align:center">{t_ant}</td>
+      <td style="text-align:center">{seta(delta_t)} {abs(delta_t)}</td>
+    </tr>
+    <tr style="background:#EEF4FB">
+      <td style="padding:8px">CTL Feitos</td>
+      <td style="text-align:center">{f_a}</td>
+      <td style="text-align:center">{f_ant}</td>
+      <td style="text-align:center">{seta(delta_f)} {abs(delta_f)}</td>
+    </tr>
+    <tr>
+      <td style="padding:8px">% CTL</td>
+      <td style="text-align:center">{p_a}%</td>
+      <td style="text-align:center">{p_ant}%</td>
+      <td style="text-align:center">{seta(delta_p)} {abs(delta_p)}pp</td>
+    </tr>
+  </table>
+
+  <h2 style="color:#1F4E8C;border-bottom:2px solid #1F4E8C;padding-bottom:6px;margin-top:24px">📊 Análise CSAT do mês</h2>
+  <table style="width:60%;border-collapse:collapse">
+    <tr style="background:#D6E4F0">
+      <th style="padding:10px;text-align:left">Categoria</th>
+      <th style="padding:10px;text-align:center">Qtd</th>
+      <th style="padding:10px;text-align:center">%</th>
+    </tr>"""
+
+    cores = {"Cliente Discorda": "#378ADD", "EstrelaBet": "#EF9F27", "Inove": "#E24B4A"}
+    for i, (cat, qtd) in enumerate(csat.items()):
         pct_c = round(qtd / f_mes * 100, 1) if f_mes > 0 else 0
-        cor   = "#378ADD" if cat == "Cliente Discorda" else "#EF9F27" if cat == "EstrelaBet" else "#E24B4A"
-        lines.append(f"<tr><td style='padding:6px;color:{cor}'><b>{cat}</b></td><td style='text-align:center'>{qtd}</td><td style='text-align:center'>{pct_c}%</td></tr>")
-    lines.append("</table>")
+        cor   = cores.get(cat, "#333")
+        bg    = "#EEF4FB" if i % 2 else "white"
+        html += f"""
+    <tr style="background:{bg}">
+      <td style="padding:8px;color:{cor}"><b>{cat}</b></td>
+      <td style="text-align:center">{qtd}</td>
+      <td style="text-align:center">{pct_c}%</td>
+    </tr>"""
+
+    html += "</table>"
 
     if not top_oport.empty:
-        lines.append("<h3 style='color:#1F4E8C'>🎯 Top oportunidades do mês</h3><ol>")
+        html += """
+  <h2 style="color:#1F4E8C;border-bottom:2px solid #1F4E8C;padding-bottom:6px;margin-top:24px">🎯 Top oportunidades do mês</h2>
+  <ol>"""
         for o, q in top_oport.items():
             label = str(o).replace("EstrelaBet - ","").replace("Inove - ","").replace("Cliente Frustrado – ","")
-            lines.append(f"<li>{label}: <b>{q}</b></li>")
-        lines.append("</ol>")
+            html += f"<li>{label}: <b>{q}</b></li>"
+        html += "</ol>"
 
     if not ofensores.empty:
-        lines.append("<h3 style='color:#E24B4A'>🔴 Ofensores (menor % CTL — mín. 3 DSATs)</h3>")
-        lines.append("<table style='border-collapse:collapse;width:80%'>")
-        lines.append("<tr style='background:#FCE4E4'><th style='padding:8px;text-align:left'>Agente</th><th>DSATs</th><th>CTL Feito</th><th>% CTL</th></tr>")
-        for _, r in ofensores.iterrows():
-            lines.append(f"<tr><td style='padding:6px'>{r['agente_nome']}</td><td style='text-align:center'>{int(r['DSATs'])}</td><td style='text-align:center'>{int(r['Feitos'])}</td><td style='text-align:center'>{r['pct']}%</td></tr>")
-        lines.append("</table>")
+        html += """
+  <h2 style="color:#A32D2D;border-bottom:2px solid #E24B4A;padding-bottom:6px;margin-top:24px">🔴 Ofensores (menor % CTL — mín. 3 DSATs)</h2>
+  <table style="width:80%;border-collapse:collapse">
+    <tr style="background:#FCE4E4">
+      <th style="padding:10px;text-align:left">Agente</th>
+      <th style="padding:10px;text-align:center">DSATs</th>
+      <th style="padding:10px;text-align:center">CTL Feito</th>
+      <th style="padding:10px;text-align:center">% CTL</th>
+    </tr>"""
+        for i, (_, r) in enumerate(ofensores.iterrows()):
+            bg = "#FFF0F0" if i % 2 else "white"
+            html += f"""
+    <tr style="background:{bg}">
+      <td style="padding:8px">{r['agente_nome']}</td>
+      <td style="text-align:center">{int(r['DSATs'])}</td>
+      <td style="text-align:center">{int(r['Feitos'])}</td>
+      <td style="text-align:center"><b>{r['pct']}%</b></td>
+    </tr>"""
+        html += "</table>"
 
     if not destaques.empty:
-        lines.append("<h3 style='color:#1D6E4A'>🟢 Destaques (maior % CTL — mín. 3 DSATs)</h3>")
-        lines.append("<table style='border-collapse:collapse;width:80%'>")
-        lines.append("<tr style='background:#E8F5EE'><th style='padding:8px;text-align:left'>Agente</th><th>DSATs</th><th>CTL Feito</th><th>% CTL</th></tr>")
-        for _, r in destaques.iterrows():
-            lines.append(f"<tr><td style='padding:6px'>{r['agente_nome']}</td><td style='text-align:center'>{int(r['DSATs'])}</td><td style='text-align:center'>{int(r['Feitos'])}</td><td style='text-align:center'>{r['pct']}%</td></tr>")
-        lines.append("</table>")
+        html += """
+  <h2 style="color:#1D6E4A;border-bottom:2px solid #1D9E75;padding-bottom:6px;margin-top:24px">🟢 Destaques (maior % CTL — mín. 3 DSATs)</h2>
+  <table style="width:80%;border-collapse:collapse">
+    <tr style="background:#E8F5EE">
+      <th style="padding:10px;text-align:left">Agente</th>
+      <th style="padding:10px;text-align:center">DSATs</th>
+      <th style="padding:10px;text-align:center">CTL Feito</th>
+      <th style="padding:10px;text-align:center">% CTL</th>
+    </tr>"""
+        for i, (_, r) in enumerate(destaques.iterrows()):
+            bg = "#F0FAF5" if i % 2 else "white"
+            html += f"""
+    <tr style="background:{bg}">
+      <td style="padding:8px">{r['agente_nome']}</td>
+      <td style="text-align:center">{int(r['DSATs'])}</td>
+      <td style="text-align:center">{int(r['Feitos'])}</td>
+      <td style="text-align:center"><b>{r['pct']}%</b></td>
+    </tr>"""
+        html += "</table>"
 
-    lines.append("<br><p style='color:#888;font-size:12px'>Relatório automático — Close the Loop EB | i9xc.com</p>")
-    return "\n".join(lines)
+    html += f"""
+  <br>
+  <p style="color:#888;font-size:12px;border-top:1px solid #ddd;padding-top:12px">
+    Relatório automático gerado toda quinta-feira às 8h BRT<br>
+    Close the Loop EB — i9xc.com
+  </p>
+</div>
+</body></html>"""
 
-# ── ENVIA E-MAIL ──────────────────────────────────────────────────────────────
+    return html
+
+# ── ENVIA VIA SENDGRID ────────────────────────────────────────────────────────
+def enviar_sendgrid(destinatarios, assunto, html_body, excel_bytes, nome_anexo):
+    anexo_b64 = base64.b64encode(excel_bytes).decode()
+
+    payload = {
+        "personalizations": [{"to": [{"email": e.strip()} for e in destinatarios]}],
+        "from": {"email": EMAIL_FROM, "name": "Close the Loop EB"},
+        "subject": assunto,
+        "content": [{"type": "text/html", "value": html_body}],
+        "attachments": [{
+            "content":     anexo_b64,
+            "type":        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "filename":    nome_anexo,
+            "disposition": "attachment"
+        }]
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+    req  = urllib.request.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {SENDGRID_KEY}",
+            "Content-Type":  "application/json"
+        },
+        method="POST"
+    )
+    with urllib.request.urlopen(req) as resp:
+        print(f"SendGrid status: {resp.status}")
+
+# ── MAIN ──────────────────────────────────────────────────────────────────────
 def enviar():
     print("=== Relatório Semanal CTL ===")
 
@@ -197,38 +299,18 @@ def enviar():
     df["depara_fila"] = df.apply(lambda r: depara_fila(r.get("fila"), r.get("contact_identity")), axis=1)
     df["data_ticket"] = pd.to_datetime(df["data_ticket"], errors="coerce")
 
-    # Filtra mês atual
-    hoje = date.today()
+    hoje    = date.today()
     ini_mes = date(hoje.year, hoje.month, 1)
     df_mes  = df[df["data_ticket"].dt.date >= ini_mes].copy()
     print(f"Registros do mês: {len(df_mes)}")
 
     excel_bytes = gerar_excel(df_mes[df_mes["status_ctl"] == "Feito"].copy())
     html_body   = gerar_insights(df, df_mes)
+    nome_anexo  = f"ctl_mes_{hoje.strftime('%Y_%m')}.xlsx"
+    assunto     = f"Close the Loop EB — Relatório Semanal {hoje.strftime('%d/%m/%Y')}"
+    destinatarios = [e.strip() for e in EMAIL_TO.split(",")]
 
-    # Monta e-mail
-    msg = MIMEMultipart("mixed")
-    msg["From"]    = EMAIL_USER
-    msg["To"]      = EMAIL_TO
-    msg["Subject"] = f"Close the Loop EB — Relatório Semanal {hoje.strftime('%d/%m/%Y')}"
-
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-    # Anexo Excel
-    part = MIMEBase("application", "octet-stream")
-    part.set_payload(excel_bytes)
-    encoders.encode_base64(part)
-    part.add_header("Content-Disposition", f'attachment; filename="ctl_mes_{hoje.strftime("%Y_%m")}.xlsx"')
-    msg.attach(part)
-
-    # Envia via SMTP Outlook
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.ehlo()
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASS)
-        destinatarios = [e.strip() for e in EMAIL_TO.split(",")]
-        server.sendmail(EMAIL_USER, destinatarios, msg.as_string())
-
+    enviar_sendgrid(destinatarios, assunto, html_body, excel_bytes, nome_anexo)
     print(f"E-mail enviado para: {EMAIL_TO}")
     print("=== Concluído ===")
 
