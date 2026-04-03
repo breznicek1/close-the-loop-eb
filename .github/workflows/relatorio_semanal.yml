@@ -1,0 +1,31 @@
+name: Relatorio Semanal CTL
+
+on:
+  schedule:
+    - cron: '0 11 * * 4'  # Quinta-feira 8h BRT (UTC-3 = 11h UTC)
+  workflow_dispatch:
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install supabase pandas openpyxl
+
+      - name: Enviar relatório
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          EMAIL_USER:   ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS:   ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:     ${{ secrets.EMAIL_TO }}
+          SMTP_HOST:    smtp.office365.com
+          SMTP_PORT:    "587"
+        run: python enviar_relatorio_semanal.py
