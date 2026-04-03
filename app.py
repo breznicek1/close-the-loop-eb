@@ -12,12 +12,12 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 USUARIOS = {
-    "gestao": {"senha": "ctl2026",    "lider": "Geral"},
-    "admin":  {"senha": "Henry@2026", "lider": "Admin"},
-    "robert.borges":  {"senha": "Estrela123", "lider": "Robert Borges"},
-    "mateus.santana":  {"senha": "Estrela123", "lider": "Mateus Santana"},
-    "isabel.silva":  {"senha": "Estrela123", "lider": "Isabel Silva"},
-    "fernanda.goncalves":  {"senha": "Estrela123", "lider": "Fernanda Goncalves"},
+    "gestao":             {"senha": "ctl2026",    "lider": "Geral"},
+    "admin":              {"senha": "Henry@2026", "lider": "Admin"},
+    "robert.borges":      {"senha": "Estrela123", "lider": "Robert Borges"},
+    "mateus.santana":     {"senha": "Estrela123", "lider": "Mateus Santana"},
+    "isabel.silva":       {"senha": "Estrela123", "lider": "Isabel Silva"},
+    "fernanda.goncalves": {"senha": "Estrela123", "lider": "Fernanda Goncalves"},
 }
 
 OPCOES_CSAT   = ["Cliente Discorda", "EstrelaBet", "Inove"]
@@ -390,10 +390,13 @@ def pagina_dashboard():
             "assunto":"Assunto","nota":"Nota","status_ctl":"Status",
             "analise_csat":"Análise CSAT","oportunidade":"Oportunidade",
             "observacao":"Observação","comentario_cliente":"Voz do Cliente",
+            "lider":"Analisado por","updated_at":"Data/Hora Análise",
         }
         cols = [c for c in cols_map if c in df_exp.columns]
         out  = df_exp[cols].copy()
         out["data_ticket"] = pd.to_datetime(out["data_ticket"], errors="coerce").dt.strftime("%Y-%m-%d")
+        if "updated_at" in out.columns:
+            out["updated_at"] = pd.to_datetime(out["updated_at"], errors="coerce").dt.tz_convert("America/Sao_Paulo").dt.strftime("%Y-%m-%d %H:%M")
         out.columns = [cols_map[c] for c in cols]
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as w:
