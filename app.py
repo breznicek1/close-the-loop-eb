@@ -655,7 +655,9 @@ def pagina_fila():
         lider      = row.get("lider_final") or "—"
         comentario = row.get("comentario_cliente") or "—"
 
-        with st.expander(f"{cor} #{row['ticket_id']} — {assunto} — Nota {n_str} — {data}"):
+        data_fmt = pd.to_datetime(row.get("data_ticket"), errors="coerce")
+        data_fmt = data_fmt.strftime("%d/%m/%Y") if pd.notna(data_fmt) else "—"
+        with st.expander(f"{cor} #{row['ticket_id']} — {assunto} — Nota {n_str} — {data_fmt}"):
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**Dados do ticket**")
