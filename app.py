@@ -109,7 +109,15 @@ def limpar_agente(raw) -> str:
 
 def limpar_data(val) -> str:
     s = str(val or "")
-    return "—" if s in ("", "None", "nan", "NaT") else s[:10]
+    if s in ("", "None", "nan", "NaT"):
+        return "—"
+    try:
+        dt = pd.to_datetime(s, errors="coerce")
+        if pd.isna(dt):
+            return s[:10]
+        return dt.strftime("%d/%m/%Y")
+    except:
+        return s[:10]
 
 def nota_str(val) -> str:
     try:
@@ -575,9 +583,9 @@ Seja direto, use linguagem executiva. Máximo 400 palavras."""
         }
         cols = [c for c in cols_map if c in df_exp.columns]
         out  = df_exp[cols].copy()
-        out["data_ticket"] = pd.to_datetime(out["data_ticket"], errors="coerce").dt.strftime("%Y-%m-%d")
+        out["data_ticket"] = pd.to_datetime(out["data_ticket"], errors="coerce").dt.strftime("%d/%m/%Y")
         if "updated_at" in out.columns:
-            out["updated_at"] = pd.to_datetime(out["updated_at"], errors="coerce").dt.tz_convert("America/Sao_Paulo").dt.strftime("%Y-%m-%d %H:%M")
+            out["updated_at"] = pd.to_datetime(out["updated_at"], errors="coerce").dt.tz_convert("America/Sao_Paulo").dt.strftime("%d/%m/%Y %H:%M")
         out.columns = [cols_map[c] for c in cols]
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as w:
