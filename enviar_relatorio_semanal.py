@@ -283,8 +283,13 @@ def enviar_sendgrid(destinatarios, assunto, html_body, excel_bytes, nome_anexo):
         },
         method="POST"
     )
-    with urllib.request.urlopen(req) as resp:
-        print(f"SendGrid status: {resp.status}")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            print(f"SendGrid status: {resp.status}")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"SendGrid erro {e.code}: {body}")
+        raise
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 def enviar():
