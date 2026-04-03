@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import requests
 import plotly.express as px
 import plotly.graph_objects as go
 from supabase import create_client
@@ -10,6 +11,7 @@ import os
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+ANTHROPIC_KEY = st.secrets.get("ANTHROPIC_KEY", "")
 
 USUARIOS = {
     "gestao":             {"senha": "ctl2026",    "lider": "Geral"},
@@ -244,17 +246,20 @@ def pagina_dashboard():
     pct_feito = round(feitos / total * 100, 1) if total > 0 else 0
     qtd_eb    = len(df_feito[df_feito["analise_csat"] == "EstrelaBet"])
     qtd_inv   = len(df_feito[df_feito["analise_csat"] == "Inove"])
+    qtd_cd    = len(df_feito[df_feito["analise_csat"] == "Cliente Discorda"])
     pct_eb    = round(qtd_eb  / feitos * 100, 1) if feitos > 0 else 0
     pct_inv   = round(qtd_inv / feitos * 100, 1) if feitos > 0 else 0
+    pct_cd    = round(qtd_cd  / feitos * 100, 1) if feitos > 0 else 0
 
     # ── MÉTRICAS ───────────────────────────────────────────────────────────
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Total DSATs",  total)
-    c2.metric("CTL Feitos",   feitos)
-    c3.metric("% Feito",      f"{pct_feito}%")
-    c4.metric("Pendentes",    pendentes)
-    c5.metric("Oport. EB",    f"{qtd_eb} ({pct_eb}%)")
-    c6.metric("Oport. Inove", f"{qtd_inv} ({pct_inv}%)")
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    c1.metric("Total DSATs",      total)
+    c2.metric("CTL Feitos",       feitos)
+    c3.metric("% Feito",          f"{pct_feito}%")
+    c4.metric("Pendentes",        pendentes)
+    c5.metric("Oport. EB",        f"{qtd_eb} ({pct_eb}%)")
+    c6.metric("Oport. Inove",     f"{qtd_inv} ({pct_inv}%)")
+    c7.metric("Cli. Frustrado",   f"{qtd_cd} ({pct_cd}%)")
     st.markdown("---")
 
     # ── LINHA 1 ────────────────────────────────────────────────────────────
@@ -365,41 +370,46 @@ def pagina_dashboard():
     st.subheader("💡 Insights do período")
 
     col_i1, col_i2, col_i3 = st.columns(3)
+    min_dsats = 3
 
-    # --- OFENSORES ---
+    # --- OFENSORES: agentes com ocorrências Inove (falha do consultor) ---
     with col_i1:
         st.markdown("#### 🔴 Ofensores")
-        min_dsats = 3
-        op_ofens = df.groupby("nome_agente_final").size().reset_index(name="DSATs")
-        op_feito_o = df_feito.groupby("nome_agente_final").size().reset_index(name="Feitos")
-        op_ofens = op_ofens.merge(op_feito_o, on="nome_agente_final", how="left").fillna(0)
-        op_ofens["Feitos"] = op_ofens["Feitos"].astype(int)
-        op_ofens["% CTL"] = (op_ofens["Feitos"] / op_ofens["DSATs"] * 100).round(1)
-        op_ofens = op_ofens[op_ofens["DSATs"] >= min_dsats].sort_values("% CTL").head(5)
-        if op_ofens.empty:
-            st.info("Sem dados suficientes.")
+        st.caption("Agentes com ocorrências Inove — falha no processo do consultor")
+        df_inove = df_feito[df_feito["analise_csat"] == "Inove"]
+        if df_inove.empty:
+            st.info("Nenhuma ocorrência Inove no período.")
         else:
-            for _, r in op_ofens.iterrows():
-                cor = "🔴" if r["% CTL"] < 50 else "🟡"
+            inove_ag = df_inove.groupby("nome_agente_final").size().reset_index(name="Ocorr. Inove")
+            total_ag = df.groupby("nome_agente_final").size().reset_index(name="DSATs")
+            inove_ag = inove_ag.merge(total_ag, on="nome_agente_final", how="left")
+            inove_ag["% Inove"] = (inove_ag["Ocorr. Inove"] / inove_ag["DSATs"] * 100).round(1)
+            inove_ag = inove_ag.sort_values("Ocorr. Inove", ascending=False).head(5)
+            for _, r in inove_ag.iterrows():
+                cor = "🔴" if r["% Inove"] >= 20 else "🟡"
                 st.markdown(f"{cor} **{r['nome_agente_final']}**")
-                st.caption(f"{r['DSATs']} DSATs — {r['Feitos']} feitos — {r['% CTL']}% CTL")
+                st.caption(f"{int(r['DSATs'])} DSATs — {int(r['Ocorr. Inove'])} ocorr. Inove — {r['% Inove']}% do total")
 
-    # --- DESTAQUES ---
+    # --- DESTAQUES: agentes com alto CTL e zero Inove ---
     with col_i2:
         st.markdown("#### 🟢 Destaques")
+        st.caption("Agentes com melhor CTL e sem ocorrências Inove")
         op_dest = df.groupby("nome_agente_final").size().reset_index(name="DSATs")
         op_feito_d = df_feito.groupby("nome_agente_final").size().reset_index(name="Feitos")
+        op_inove_d = df_feito[df_feito["analise_csat"]=="Inove"].groupby("nome_agente_final").size().reset_index(name="Inove")
         op_dest = op_dest.merge(op_feito_d, on="nome_agente_final", how="left").fillna(0)
+        op_dest = op_dest.merge(op_inove_d, on="nome_agente_final", how="left").fillna(0)
         op_dest["Feitos"] = op_dest["Feitos"].astype(int)
-        op_dest["% CTL"] = (op_dest["Feitos"] / op_dest["DSATs"] * 100).round(1)
-        op_dest = op_dest[op_dest["DSATs"] >= min_dsats].sort_values("% CTL", ascending=False).head(5)
+        op_dest["Inove"]  = op_dest["Inove"].astype(int)
+        op_dest["% CTL"]  = (op_dest["Feitos"] / op_dest["DSATs"] * 100).round(1)
+        op_dest = op_dest[(op_dest["DSATs"] >= min_dsats) & (op_dest["Inove"] == 0)].sort_values("% CTL", ascending=False).head(5)
         if op_dest.empty:
             st.info("Sem dados suficientes.")
         else:
             for _, r in op_dest.iterrows():
                 cor = "🟢" if r["% CTL"] >= 80 else "🟡"
                 st.markdown(f"{cor} **{r['nome_agente_final']}**")
-                st.caption(f"{r['DSATs']} DSATs — {r['Feitos']} feitos — {r['% CTL']}% CTL")
+                st.caption(f"{int(r['DSATs'])} DSATs — {int(r['Feitos'])} feitos — {r['% CTL']}% CTL — 0 Inove")
 
     # --- COMPARATIVO SEMANAL ---
     with col_i3:
@@ -409,10 +419,8 @@ def pagina_dashboard():
         ini_sem_ant    = ini_sem_atual - pd.Timedelta(weeks=1)
         fim_sem_ant    = ini_sem_atual - pd.Timedelta(days=1)
 
-        df_full_tz = df_full.copy()
-
-        sem_atual = df_full_tz[df_full_tz["data_ticket"] >= ini_sem_atual]
-        sem_ant   = df_full_tz[(df_full_tz["data_ticket"] >= ini_sem_ant) & (df_full_tz["data_ticket"] <= fim_sem_ant)]
+        sem_atual = df_full[df_full["data_ticket"] >= ini_sem_atual]
+        sem_ant   = df_full[(df_full["data_ticket"] >= ini_sem_ant) & (df_full["data_ticket"] <= fim_sem_ant)]
 
         def resumo(d):
             total = len(d)
@@ -420,24 +428,112 @@ def pagina_dashboard():
             pct   = round(feito / total * 100, 1) if total > 0 else 0
             return total, feito, pct
 
-        t_a, f_a, p_a = resumo(sem_atual)
+        t_a, f_a, p_a     = resumo(sem_atual)
         t_ant, f_ant, p_ant = resumo(sem_ant)
-
         delta_t = t_a - t_ant
         delta_f = f_a - f_ant
         delta_p = round(p_a - p_ant, 1)
 
-        st.metric("DSATs semana atual",   t_a,  delta=f"{delta_t:+d} vs semana ant.")
-        st.metric("CTL feitos",           f_a,  delta=f"{delta_f:+d} vs semana ant.")
-        st.metric("% CTL",                f"{p_a}%", delta=f"{delta_p:+.1f}pp vs semana ant.")
+        st.metric("DSATs semana atual", t_a,  delta=f"{delta_t:+d} vs semana ant.")
+        st.metric("CTL feitos",         f_a,  delta=f"{delta_f:+d} vs semana ant.")
+        st.metric("% CTL",              f"{p_a}%", delta=f"{delta_p:+.1f}pp vs semana ant.")
 
-        # top oport semana atual
+        inove_sem = len(sem_atual[sem_atual["analise_csat"]=="Inove"])
+        inove_ant = len(sem_ant[sem_ant["analise_csat"]=="Inove"])
+        st.metric("Ocorr. Inove",       inove_sem, delta=f"{inove_sem-inove_ant:+d} vs semana ant.", delta_color="inverse")
+
         top_oport = sem_atual[sem_atual["status_ctl"]=="Feito"]["oportunidade"].value_counts().head(3)
         if not top_oport.empty:
             st.markdown("**Top oportunidades esta semana:**")
             for o, q in top_oport.items():
                 label = str(o).replace("EstrelaBet - ","").replace("Inove - ","").replace("Cliente Frustrado – ","")
                 st.caption(f"• {label}: {q}")
+
+    st.markdown("---")
+
+    # ── ANÁLISE VOZ DO CLIENTE ─────────────────────────────────────────────
+    st.subheader("🗣️ Análise de Voz do Cliente")
+
+    df_voz = df_feito[
+        df_feito["comentario_cliente"].notna() &
+        (df_feito["comentario_cliente"] != "") &
+        (df_feito["comentario_cliente"] != "—")
+    ].copy()
+
+    col_v1, col_v2 = st.columns([1, 2])
+    with col_v1:
+        st.metric("Tickets com voz do cliente", len(df_voz))
+        st.metric("Sem comentário", feitos - len(df_voz))
+
+        if not df_voz.empty and ANTHROPIC_KEY:
+            if st.button("🤖 Gerar análise com IA", use_container_width=True):
+                with st.spinner("Analisando observações e comentários..."):
+                    amostra_obs  = df_voz["observacao"].dropna().head(50).tolist()
+                    amostra_voz  = df_voz["comentario_cliente"].dropna().head(50).tolist()
+                    amostra_oport = df_voz["oportunidade"].dropna().head(50).tolist()
+
+                    prompt = f"""Você é um analista de CX especialista em operações de atendimento.
+Analise os dados abaixo de {len(df_voz)} tickets DSAT tratados no Close the Loop da EstrelaBet.
+
+OBSERVAÇÕES DOS LÍDERES (amostra):
+{chr(10).join(f'- {o}' for o in amostra_obs if o)}
+
+VOZ DO CLIENTE (comentários das avaliações negativas):
+{chr(10).join(f'- {v}' for v in amostra_voz if v)}
+
+OPORTUNIDADES IDENTIFICADAS:
+{chr(10).join(f'- {p}' for p in amostra_oport if p)}
+
+Gere um relatório executivo em português com:
+1. **Principais temas recorrentes** na voz do cliente (máx 5 tópicos)
+2. **Padrões identificados** nas observações dos líderes
+3. **Correlações** entre o que o cliente reclama e a oportunidade identificada
+4. **Recomendações de negócio** (máx 3 ações prioritárias)
+
+Seja direto, use linguagem executiva. Máximo 400 palavras."""
+
+                    resp = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "x-api-key": ANTHROPIC_KEY,
+                            "anthropic-version": "2023-06-01",
+                            "content-type": "application/json"
+                        },
+                        json={
+                            "model": "claude-sonnet-4-20250514",
+                            "max_tokens": 1000,
+                            "messages": [{"role": "user", "content": prompt}]
+                        },
+                        timeout=30
+                    )
+                    if resp.status_code == 200:
+                        analise = resp.json()["content"][0]["text"]
+                        st.session_state["analise_voz"] = analise
+                    else:
+                        st.error(f"Erro na API: {resp.status_code}")
+        elif not ANTHROPIC_KEY:
+            st.warning("Configure ANTHROPIC_KEY nos secrets do Streamlit para habilitar análise com IA.")
+
+    with col_v2:
+        if "analise_voz" in st.session_state:
+            st.markdown(st.session_state["analise_voz"])
+        elif not df_voz.empty:
+            # Análise simples sem IA
+            st.markdown("**Palavras mais frequentes nos comentários:**")
+            import re
+            from collections import Counter
+            stopwords = {"de","da","do","que","o","a","e","em","um","uma","com","para","por","não","no","na","se","os","as","ao","ou","mais","me","meu","minha","foi","pois","mas","já","ele","ela","seu","sua","isso","este","esta","esse","essa","tem","são","está"}
+            todos_comentarios = " ".join(df_voz["comentario_cliente"].dropna().tolist()).lower()
+            palavras = re.findall(r"[a-záéíóúâêîôûãõç]{4,}", todos_comentarios)
+            freq = Counter(w for w in palavras if w not in stopwords).most_common(15)
+            if freq:
+                freq_df = pd.DataFrame(freq, columns=["Palavra","Frequência"])
+                fig_voz = px.bar(freq_df.sort_values("Frequência"), x="Frequência", y="Palavra",
+                                 orientation="h", color_discrete_sequence=["#7F77DD"])
+                fig_voz.update_layout(height=350, margin=dict(t=10,b=10,l=10))
+                st.plotly_chart(fig_voz, use_container_width=True)
+        else:
+            st.info("Sem comentários de clientes no período selecionado.")
 
     st.markdown("---")
 
