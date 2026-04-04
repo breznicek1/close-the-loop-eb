@@ -16,6 +16,7 @@ ANTHROPIC_KEY = st.secrets.get("ANTHROPIC_KEY", "")
 USUARIOS = {
     "gestao":             {"senha": "ctl2026",    "lider": "Geral"},
     "admin":              {"senha": "Henry@2026", "lider": "Admin"},
+    "danny":              {"senha": "Estrela123", "lider": "ControlDesk"},
     "robert.borges":      {"senha": "Estrela123", "lider": "Robert Borges"},
     "mateus.santana":     {"senha": "Estrela123", "lider": "Mateus Santana"},
     "isabel.silva":       {"senha": "Estrela123", "lider": "Isabel Silva"},
