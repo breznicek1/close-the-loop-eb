@@ -1,833 +1,1165 @@
+"""
+app.py — Chat Dashboard EB v4
+Dashboard de atendimento chat EstrelaBet — i9xc.com
+"""
+
 import streamlit as st
 import pandas as pd
-import requests
-import plotly.express as px
+import numpy as np
 import plotly.graph_objects as go
-from supabase import create_client
 from datetime import date, timedelta
-import io
-import os
+import io, os
 
-# ── CONFIG ────────────────────────────────────────────────────────────────────
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-ANTHROPIC_KEY = st.secrets.get("ANTHROPIC_KEY", "")
+from db import run_query, fmt_time, default_dates
+from queries import SQL_BASE_GERAL, SQL_RECHAMADA, SQL_N1, SQL_CLIENTE, SQL_CLIENTES_RECORRENTES
+from diario import get_diario
+
+st.set_page_config(page_title="Chat Dashboard EB", page_icon="⭐", layout="wide", initial_sidebar_state="expanded")
+
+META_CSAT = 0.90
+META_TMA  = 15 * 60
 
 USUARIOS = {
-    "gestao":             {"senha": "ctl2026",    "lider": "Geral"},
-    "admin":              {"senha": "Henry@2026", "lider": "Admin"},
-    "robert.borges":      {"senha": "Estrela123", "lider": "Robert Borges"},
-    "mateus.santana":     {"senha": "Estrela123", "lider": "Mateus Santana"},
-    "isabel.silva":       {"senha": "Estrela123", "lider": "Isabel Silva"},
-    "fernanda.goncalves": {"senha": "Estrela123", "lider": "Fernanda Goncalves"},
+    "gestao":             {"senha": "chat2026",  "perfil": "admin"},
+    "admin":              {"senha": "Henry@2026", "perfil": "admin"},
+    "danny":              {"senha": "Estrela123", "perfil": "ControlDesk"},
+    "isabel.silva":       {"senha": "Estrela123", "perfil": "lider"},
+    "fernanda.goncalves": {"senha": "Estrela123", "perfil": "lider"},
+    "mateus.santana":     {"senha": "Estrela123", "perfil": "lider"},
+    "robert.borges":      {"senha": "Estrela123", "perfil": "lider"},
 }
 
-OPCOES_CSAT   = ["Cliente Discorda", "EstrelaBet", "Inove"]
-OPCOES_STATUS = ["Pendente", "Feito"]
-NOTAS_EMOJI   = {1: "⭐ 1", 2: "⭐ 2", 3: "⭐ 3", 4: "⭐ 4", 5: "⭐ 5"}
+def login():
+    st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"]{
+        background:linear-gradient(160deg,#020d1f 0%,#071228 55%,#0a1a35 100%)!important;}
+    [data-testid="stHeader"]{background:transparent!important;}
+    .lg-wrap{display:flex;flex-direction:column;align-items:center;padding-top:60px;}
+    .lg-logo{display:flex;align-items:center;gap:14px;margin-bottom:36px;}
+    .lg-inove{font-size:2rem;font-weight:900;letter-spacing:3px;
+        background:linear-gradient(90deg,#4fc3f7 0%,#9775fa 50%,#ff7043 100%);
+        -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+    .lg-sep{color:#1e3a70;font-size:1.6rem;font-weight:200;-webkit-text-fill-color:#1e3a70;}
+    .lg-eb{font-size:1.3rem;font-weight:800;color:#f5c518;letter-spacing:2px;-webkit-text-fill-color:#f5c518;}
+    .lg-box{background:rgba(13,27,62,0.97);border:1px solid #1e3a70;border-radius:18px;
+        padding:36px 40px 28px;width:100%;max-width:400px;
+        box-shadow:0 20px 60px rgba(0,0,0,.5),inset 0 1px 0 rgba(79,195,247,.08);}
+    .lg-title{text-align:center;color:#fff;font-size:1.2rem;font-weight:700;margin-bottom:4px;}
+    .lg-sub{text-align:center;color:#7fa8d4;font-size:.82rem;margin-bottom:22px;}
+    .lg-div{border:none;border-top:1px solid #1a3a70;margin:0 0 20px;}
+    </style>
+    <div class="lg-wrap">
+        <div class="lg-logo">
+            <span class="lg-inove">●INOVE</span>
+            <span class="lg-sep">|</span>
+            <span class="lg-eb">★ ESTRELABET</span>
+        </div>
+        <div class="lg-box">
+            <div class="lg-title">Chat Dashboard EB</div>
+            <div class="lg-sub">Central de Atendimento · i9xc.com</div>
+            <hr class="lg-div">
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    _, col, _ = st.columns([1, 1.6, 1])
+    with col:
+        with st.form("login_form"):
+            u = st.text_input("👤 Usuário", placeholder="seu.usuario")
+            s = st.text_input("🔒 Senha", type="password", placeholder="••••••••")
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.form_submit_button("Entrar →", use_container_width=True):
+                usr = USUARIOS.get(u)
+                if usr and usr["senha"] == s:
+                    st.session_state.update({"logado":True,"usuario":u,"perfil":usr["perfil"]})
+                    st.rerun()
+                else:
+                    st.error("Usuário ou senha incorretos.")
 
-CORES_CSAT = {
-    "Cliente Discorda": "#378ADD",
-    "EstrelaBet":       "#EF9F27",
-    "Inove":            "#E24B4A",
-}
+if not st.session_state.get("logado"):
+    login(); st.stop()
 
-OPCOES_OPORTUNIDADE = [
-    "",
-    "EstrelaBet - Bônus - Não Creditado",
-    "EstrelaBet - Bônus - Ganho Maximo",
-    "EstrelaBet - Bônus - App Dentro do prazo",
-    "EstrelaBet - Bônus - App Fora do prazo",
-    "EstrelaBet - Bônus - Cashout",
-    "EstrelaBet - Bônus - Vencido",
-    "EstrelaBet - Bônus - Aposta Devolvida/Adiada",
-    "EstrelaBet - Bônus - Roleta Gratis",
-    "EstrelaBet - Bônus - Roleta Gratis (FRAUDE)",
-    "EstrelaBet - N2 - Fora do prazo",
-    "EstrelaBet - N2 - Resposta não resolutiva",
-    "EstrelaBet - N2 - Não concorda com o prazo",
-    "EstrelaBet - SB - Recalculo de odd",
-    "EstrelaBet - SB - Aposta Devolvida",
-    "EstrelaBet - SB - Limitação Alternar",
-    "EstrelaBet - SB - Rollback",
-    "EstrelaBet - VIP - Quero bônus",
-    "EstrelaBet - Site - Cadastro de endereço",
-    "EstrelaBet - Site - Jogos fora do ar",
-    "EstrelaBet - Site - Instabilidade de Login",
-    "EstrelaBet - APP - Jogos fora do ar",
-    "EstrelaBet - APP - Instabilidade de Login",
-    "EstrelaBet - KYC - Erro KYC",
-    "EstrelaBet - Saque - Co_post_start",
-    "EstrelaBet - Saque - Chave Pix banco lista restritiva",
-    "EstrelaBet - Saque - Excedeu Limite Diario",
-    "EstrelaBet - Saque - Alteração chave PIX",
-    "EstrelaBet - Closed - Ludopatia",
-    "EstrelaBet - Closed - Abuso de Bonus",
-    "EstrelaBet - Encerramento - Desrespeito",
-    "EstrelaBet - BLIP - Avaliação indevida - Blip Registrou Nota Errada",
-    "EstrelaBet - BLIP - Avaliação indevida - Cliente Clicou Errado",
-    "EstrelaBet - Site - Sistema Estrela Fora do Ar",
-    "EstrelaBet - Site - Bloqueio de Saque Nacional",
-    "Inove - Postura",
-    "Inove - Condução",
-    "Inove - Encerramento",
-    "Inove - Dominio Fluxo",
-    "Cliente Frustrado – Resistência a Prazos Operacionais",
-    "Cliente Frustrado – Discordância da Análise (Sem Fundamentação Clara)",
-    "Cliente Frustrado – Negativa de Bônus",
-    "Cliente Frustrado – Negativa de Reembolso por Perda",
-    "Cliente Frustrado – Discordância das Regras de Aposta",
-    "Cliente Frustrado – Avaliação Negativa por Tempo de Retorno no Chat",
-    "Cliente Frustrado – Cliente Recorrente / Contumaz",
-    "Cliente Frustrado BLIP - Avaliação dada para retorno ao chat após inatividade",
-    "Cliente Frustrado – Discordancia do processos operacionais",
-]
+st.markdown("""<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+*{font-family:'Inter',sans-serif!important;}
+section[data-testid="stSidebar"]{background:#071228!important;border-right:1px solid #1a2f52;}
+section[data-testid="stSidebar"] *{color:#e0ecff!important;}
+section[data-testid="stSidebar"] label{font-size:.82rem!important;font-weight:500!important;}
+section[data-testid="stSidebar"] input{color:#ffffff!important;background:#0d1b3e!important;
+    border:1px solid #1e3a70!important;border-radius:6px!important;}
+section[data-testid="stSidebar"] .stDateInput input{color:#ffffff!important;}
+section[data-testid="stSidebar"] [data-testid="stDateInput"] *{color:#e0ecff!important;}
+.ph{background:linear-gradient(135deg,#071228,#0d2250);padding:14px 22px;border-radius:10px;
+    margin-bottom:16px;border:1px solid #1a3a70;display:flex;align-items:center;justify-content:space-between;}
+.pt{color:#fff;font-size:1.25rem;font-weight:700;}.pl{color:#f5c518;font-size:1rem;font-weight:800;letter-spacing:2px;}
+.kr{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.kc{flex:1;min-width:110px;background:#0d1b3e;border:1px solid #1e3a70;border-radius:10px;padding:12px 14px;text-align:center;}
+.kl{color:#a8c4e8;font-size:.67rem;font-weight:600;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px;}
+.kv{color:#ffffff;font-size:1.5rem;font-weight:700;line-height:1.1;}
+.kp{color:#4fc3f7;font-size:.88rem;font-weight:600;margin-top:2px;}
+.kr-red .kv,.kr-red .kp{color:#ff6b6b!important;}
+.kr-green .kv,.kr-green .kp{color:#69db7c!important;}
+.kr-yellow .kv,.kr-yellow .kp{color:#ffd43b!important;}
+.stTabs [data-baseweb="tab-list"]{gap:3px;background:#071228;border-radius:8px;padding:4px;}
+[data-baseweb="tag"] svg{display:none!important;}
+[data-baseweb="tag"]{background:#1a3a70!important;border:none!important;}
+[data-baseweb="tag"] span{color:#e0ecff!important;}
+.stTabs [data-baseweb="tab"]{background:transparent;color:#a8c4e8!important;border-radius:6px;padding:5px 11px;font-size:.78rem;font-weight:500;}
+.stTabs [aria-selected="true"]{background:#1a3a70!important;color:#ffffff!important;font-weight:600!important;}
+.tli{border-left:3px solid #1e3a70;padding:5px 0 5px 13px;margin-bottom:5px;position:relative;}
+.tli::before{content:'';position:absolute;left:-7px;top:9px;width:10px;height:10px;
+    background:#4fc3f7;border-radius:50%;border:2px solid #071228;}
+.td{color:#7fa8d4;font-size:.72rem;font-weight:500;}
+.tt{color:#ffffff;font-weight:600;font-size:.88rem;}
+.tm{color:#c8d8f0;font-size:.75rem;margin-top:1px;}
+.ac{padding:12px 16px;border-radius:8px;margin-bottom:7px;border-left:4px solid;
+    font-size:.86rem;font-weight:400;line-height:1.5;}
+.ac b{color:#ffffff!important;font-weight:700;}
+.ac span{color:#e0ecff!important;}
+.ac-red{background:rgba(220,38,38,.18);border-color:#ef4444;color:#fca5a5;}
+.ac-red span{color:#fecaca!important;}
+.ac-yellow{background:rgba(234,179,8,.15);border-color:#eab308;color:#fde68a;}
+.ac-yellow span{color:#fef08a!important;}
+.ac-green{background:rgba(34,197,94,.15);border-color:#22c55e;color:#a7f3d0;}
+.ac-green span{color:#bbf7d0!important;}
+.ac-blue{background:rgba(59,130,246,.15);border-color:#3b82f6;color:#bfdbfe;}
+.ac-blue span{color:#dbeafe!important;}
+.rb{background:#0a1628;border:1px solid #1e3a70;border-radius:10px;padding:18px;
+    font-family:'Courier New',monospace;font-size:.82rem;color:#e0ecff;white-space:pre-wrap;line-height:1.6;}
+div[data-testid="stDataFrame"] *{font-size:.81rem!important;color:#e0ecff!important;}
+div[data-testid="stDataFrame"] th{background:#0d2250!important;color:#a8c4e8!important;font-weight:600!important;}
+.drill-tag{background:#0d2250;border-radius:6px;padding:8px 12px;margin-bottom:4px;
+    border-left:3px solid #4fc3f7;color:#ffffff;font-weight:600;font-size:.88rem;}
+.drill-sub{padding:3px 0 3px 22px;color:#a8c4e8;font-size:.79rem;}
+</style>""", unsafe_allow_html=True)
 
-# Oportunidades filtradas por categoria de análise CSAT
-OPCOES_OPORTUNIDADE_POR_CSAT = {
-    "EstrelaBet": [
-        "",
-        "EstrelaBet - Bônus - Não Creditado",
-        "EstrelaBet - Bônus - Ganho Maximo",
-        "EstrelaBet - Bônus - App Dentro do prazo",
-        "EstrelaBet - Bônus - App Fora do prazo",
-        "EstrelaBet - Bônus - Cashout",
-        "EstrelaBet - Bônus - Vencido",
-        "EstrelaBet - Bônus - Aposta Devolvida/Adiada",
-        "EstrelaBet - Bônus - Roleta Gratis",
-        "EstrelaBet - Bônus - Roleta Gratis (FRAUDE)",
-        "EstrelaBet - N2 - Fora do prazo",
-        "EstrelaBet - N2 - Resposta não resolutiva",
-        "EstrelaBet - N2 - Não concorda com o prazo",
-        "EstrelaBet - SB - Recalculo de odd",
-        "EstrelaBet - SB - Aposta Devolvida",
-        "EstrelaBet - SB - Limitação Alternar",
-        "EstrelaBet - SB - Rollback",
-        "EstrelaBet - VIP - Quero bônus",
-        "EstrelaBet - Site - Cadastro de endereço",
-        "EstrelaBet - Site - Jogos fora do ar",
-        "EstrelaBet - Site - Instabilidade de Login",
-        "EstrelaBet - APP - Jogos fora do ar",
-        "EstrelaBet - APP - Instabilidade de Login",
-        "EstrelaBet - KYC - Erro KYC",
-        "EstrelaBet - Saque - Co_post_start",
-        "EstrelaBet - Saque - Chave Pix banco lista restritiva",
-        "EstrelaBet - Saque - Excedeu Limite Diario",
-        "EstrelaBet - Saque - Alteração chave PIX",
-        "EstrelaBet - Closed - Ludopatia",
-        "EstrelaBet - Closed - Abuso de Bonus",
-        "EstrelaBet - Encerramento - Desrespeito",
-        "EstrelaBet - BLIP - Avaliação indevida - Blip Registrou Nota Errada",
-        "EstrelaBet - BLIP - Avaliação indevida - Cliente Clicou Errado",
-        "EstrelaBet - Site - Sistema Estrela Fora do Ar",
-        "EstrelaBet - Site - Bloqueio de Saque Nacional",
-    ],
-    "Inove": [
-        "",
-        "Inove - Postura",
-        "Inove - Condução",
-        "Inove - Encerramento",
-        "Inove - Dominio Fluxo",
-    ],
-    "Cliente Discorda": [
-        "",
-        "Cliente Frustrado – Resistência a Prazos Operacionais",
-        "Cliente Frustrado – Discordância da Análise (Sem Fundamentação Clara)",
-        "Cliente Frustrado – Negativa de Bônus",
-        "Cliente Frustrado – Negativa de Reembolso por Perda",
-        "Cliente Frustrado – Discordância das Regras de Aposta",
-        "Cliente Frustrado – Avaliação Negativa por Tempo de Retorno no Chat",
-        "Cliente Frustrado – Cliente Recorrente / Contumaz",
-        "Cliente Frustrado BLIP - Avaliação dada para retorno ao chat após inatividade",
-        "Cliente Frustrado – Discordancia do processos operacionais",
-    ],
-}
-
-def primeiro_dia_mes():
-    hoje = date.today()
-    return date(hoje.year, hoje.month, 1)
-
-# ── HELPERS ───────────────────────────────────────────────────────────────────
-def depara_fila(team, contact_identity) -> str:
-    t = str(team             or "").upper()
-    i = str(contact_identity or "").lower()
-    if "VIP" in t:         return "VIP"
-    if "suportevup" in i:  return "VUPI"
-    if "suporteprd1" in i: return "Core"
-    if "ura" in i:         return "URA"
-    return "Outros"
-
-def limpar_agente(raw) -> str:
-    raw = str(raw or "")
-    if not raw or raw in ("None", "nan"):
-        return "—"
-    if "%40" in raw:
-        raw = raw.split("%40")[0]
-    if "@" in raw:
-        raw = raw.split("@")[0]
-    return raw.replace(".", " ").title()
-
-def limpar_data(val) -> str:
-    s = str(val or "")
-    if s in ("", "None", "nan", "NaT"):
-        return "—"
+# ── DEPARA ──
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_depara():
     try:
-        dt = pd.to_datetime(s, errors="coerce")
-        if pd.isna(dt):
-            return s[:10]
-        return dt.strftime("%d/%m/%Y")
+        return pd.read_excel("https://raw.githubusercontent.com/breznicek1/close-the-loop-eb/main/depara_lideranca.xlsx")
     except:
-        return s[:10]
+        return pd.DataFrame(columns=["AgentIdentity","Depara Nome","Depara Lider"])
 
-def nota_str(val) -> str:
+df_dep = load_depara()
+def nome_ag(e): r=df_dep[df_dep["AgentIdentity"]==e]; return r["Depara Nome"].iloc[0] if len(r)>0 else str(e).split("@")[0].replace("%40","_").split("_")[0].replace("."," ").title()
+def lider_ag(e): r=df_dep[df_dep["AgentIdentity"]==e]; return r["Depara Lider"].iloc[0] if len(r)>0 else "—"
+
+# ── SUPABASE CTL ──
+@st.cache_data(ttl=300, show_spinner=False)
+def load_ctl(di, df_):
     try:
-        return NOTAS_EMOJI.get(int(val), f"⭐ {val}") if pd.notna(val) and val else "—"
-    except:
-        return "—"
+        from supabase import create_client
+        sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+        res = sb.table("ctlloop_analise")\
+            .select("ticket_id,agente,data_ticket,analise_csat,oportunidade,status_ctl,lider,observacao")\
+            .gte("data_ticket", str(di)).lte("data_ticket", str(df_)+"T23:59:59").execute()
+        return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+    except: return pd.DataFrame()
 
-def categoria_oportunidade(oport) -> str:
-    if not oport or pd.isna(oport):
-        return "Sem classificação"
-    o = str(oport)
-    if o.startswith("EstrelaBet"):   return "EstrelaBet"
-    if o.startswith("Inove"):        return "Inove"
-    if o.startswith("Cliente"):      return "Cliente Discorda"
-    return "Outros"
+# ── HELPERS ──
+CORES = {"Core":"#4fc3f7","VIP":"#9775fa","VUPI":"#ff7043","URA":"#69db7c","Outros":"#adb5bd"}
 
-# ── DEPARA LIDERANÇA ──────────────────────────────────────────────────────────
-@st.cache_data
-def carregar_depara_lideranca():
-    caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)), "depara_lideranca.xlsx")
-    if not os.path.exists(caminho):
-        return pd.DataFrame()
-    df = pd.read_excel(caminho)
-    df = df[["AgentIdentity", "Depara Nome", "Depara Lider"]].dropna(subset=["AgentIdentity"])
-    df.columns = ["contact_identity", "nome_agente", "lider_depara"]
-    df["contact_identity"] = df["contact_identity"].str.strip().str.lower()
-    return df
+def kpi(lbl,val,pct=None,cls=""):
+    p=f'<div class="kp">{pct}</div>' if pct else ""
+    return f'<div class="kc {cls}"><div class="kl">{lbl}</div><div class="kv">{val}</div>{p}</div>'
 
-# ── SUPABASE ──────────────────────────────────────────────────────────────────
-@st.cache_resource
-def get_client():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+def to_xl(d):
+    b=io.BytesIO()
+    with pd.ExcelWriter(b,engine="openpyxl") as w: d.to_excel(w,index=False)
+    return b.getvalue()
 
-@st.cache_data(ttl=300)
-def carregar_fila():
-    sb     = get_client()
-    todos  = []
-    chunk  = 1000
-    offset = 0
-    while True:
-        res = (
-            sb.table("ctlloop_analise")
-            .select("*")
-            .order("data_ticket", desc=True)
-            .range(offset, offset + chunk - 1)
-            .execute()
-        )
-        if not res.data:
-            break
-        todos.extend(res.data)
-        if len(res.data) < chunk:
-            break
-        offset += chunk
+def hm_fig(piv, key=""):
+    fig = go.Figure(go.Heatmap(
+        z=piv.values, x=[str(c) for c in piv.columns], y=piv.index.tolist(),
+        colorscale=[[0,"#071228"],[0.3,"#1a3a70"],[0.65,"#e08080"],[1,"#c0392b"]],
+        showscale=False, text=piv.values, texttemplate="%{text}",
+        textfont={"size":9,"color":"white"},
+        hovertemplate="%{y} | %{x}: %{z}<extra></extra>",
+    ))
+    fig.update_layout(height=max(300,len(piv)*23+80), margin=dict(l=200,r=20,t=40,b=60),
+        paper_bgcolor="#071228", plot_bgcolor="#071228",
+        font=dict(color="#e0ecff",size=10),
+        xaxis=dict(side="top",tickangle=-45,tickfont=dict(size=9,color="#a8c4e8")),
+        yaxis=dict(tickfont=dict(size=10,color="#e0ecff")))
+    return fig
 
-    if not todos:
-        return pd.DataFrame()
+def render_hm(piv_raw, key_dl="dl", show_chart=False):
+    piv = piv_raw.copy()
+    piv["Total"] = piv.sum(axis=1)
+    piv = piv.sort_values("Total", ascending=False)
+    piv = piv[["Total"]+[c for c in piv.columns if c!="Total"]]
+    st.dataframe(piv, use_container_width=True)
+    st.download_button("⬇️ Download Excel", to_xl(piv.reset_index()), f"{key_dl}.xlsx", key=key_dl)
+    if show_chart:
+        st.plotly_chart(hm_fig(piv.drop(columns=["Total"])), use_container_width=True, key=f"hm_{key_dl}")
 
-    df = pd.DataFrame(todos)
-    df["depara_fila"]  = df.apply(lambda r: depara_fila(r.get("fila"), r.get("contact_identity")), axis=1)
-    df["data_ticket"]  = pd.to_datetime(df["data_ticket"], errors="coerce").dt.tz_convert("America/Sao_Paulo")
-    df["agente_nome"]  = df["agente"].apply(limpar_agente)
-    df["cat_oport"]    = df["oportunidade"].apply(categoria_oportunidade)
+def pf(x): return f"{x:.1%}" if pd.notna(x) and x is not None else "—"
 
-    depara = carregar_depara_lideranca()
-    if not depara.empty:
-        df["agente_key"] = df["agente"].str.strip().str.lower()
-        df = df.merge(depara, left_on="agente_key", right_on="contact_identity", how="left", suffixes=("", "_dep"))
-        df["lider_final"]       = df["lider_depara"].fillna("Não mapeado")
-        df["nome_agente_final"] = df["nome_agente"].fillna(df["agente_nome"])
-    else:
-        df["lider_final"]       = "Não mapeado"
-        df["nome_agente_final"] = df["agente_nome"]
-
-    return df
-
-def atualizar_analise(id_registro, analise_csat, oportunidade, observacao, status_ctl, lider):
-    get_client().table("ctlloop_analise").update({
-        "analise_csat": analise_csat,
-        "oportunidade": oportunidade,
-        "observacao":   observacao,
-        "status_ctl":   status_ctl,
-        "lider":        lider,
-    }).eq("id", id_registro).execute()
-    st.cache_data.clear()
-
-# ── LOGIN ─────────────────────────────────────────────────────────────────────
-def tela_login():
-    st.title("Close the Loop — EstrelaBet")
-    st.markdown("---")
-    _, col2, _ = st.columns([1, 2, 1])
-    with col2:
-        st.subheader("Entrar")
-        usuario = st.text_input("Usuário").strip().lower()
-        senha   = st.text_input("Senha", type="password")
-        if st.button("Entrar", use_container_width=True):
-            if usuario in USUARIOS and USUARIOS[usuario]["senha"] == senha:
-                st.session_state.update({"logado": True, "usuario": usuario, "lider": USUARIOS[usuario]["lider"]})
-                st.rerun()
-            else:
-                st.error("Usuário ou senha incorretos.")
-
-# ── PÁGINA: DASHBOARD ─────────────────────────────────────────────────────────
-def pagina_dashboard():
-    st.title("Dashboard — Close the Loop EB")
-
-    st.sidebar.markdown("### Filtros")
-    data_ini  = st.sidebar.date_input("Data início", value=primeiro_dia_mes(), key="dash_ini")
-    data_fim  = st.sidebar.date_input("Data fim",    value=date.today(),       key="dash_fim")
-
-    df_full = carregar_fila()
-    if df_full.empty:
-        st.info("Nenhum dado disponível.")
+def drill_tag_subtag(df_g, key_prefix="drill"):
+    """Tabela TAG1 → SubTag como linhas indentadas numa única tabela."""
+    if df_g.empty:
+        st.info("Sem dados.")
         return
+    tags = df_g.groupby("Depara_TAG1").agg(
+        Qtd=("sequentialId","count"),
+        CSAT=("humanConversationEvaluation",lambda x:x.isin(["4","5"]).sum()),
+        Aval=("humanConversationEvaluation",lambda x:x.isin(["1","2","3","4","5"]).sum()),
+        TME=("TME_segundos","mean"), TMA=("TMA_segundos","mean"),
+    ).reset_index().sort_values("Qtd",ascending=False)
+    tot = tags["Qtd"].sum()
+    rows = []
+    for _, rt in tags.iterrows():
+        pct = rt["Qtd"]/tot*100 if tot>0 else 0
+        cs  = rt["CSAT"]/rt["Aval"] if rt["Aval"]>0 else None
+        rows.append({
+            "Nível": f"▶ {rt['Depara_TAG1']}",
+            "Qtd": int(rt["Qtd"]), "%": f"{pct:.1f}%",
+            "% CSAT": pf(cs), "TME": fmt_time(rt["TME"]), "TMA": fmt_time(rt["TMA"])
+        })
+        subs = df_g[df_g["Depara_TAG1"]==rt["Depara_TAG1"]].groupby("Depara_SubTag").agg(
+            Qtd=("sequentialId","count"),
+            CSAT=("humanConversationEvaluation",lambda x:x.isin(["4","5"]).sum()),
+            Aval=("humanConversationEvaluation",lambda x:x.isin(["1","2","3","4","5"]).sum()),
+            TME=("TME_segundos","mean"), TMA=("TMA_segundos","mean"),
+        ).reset_index().sort_values("Qtd",ascending=False)
+        for _, rs in subs.iterrows():
+            pct_s = rs["Qtd"]/rt["Qtd"]*100 if rt["Qtd"]>0 else 0
+            cs_s  = rs["CSAT"]/rs["Aval"] if rs["Aval"]>0 else None
+            rows.append({
+                "Nível": f"    ↳ {rs['Depara_SubTag']}",
+                "Qtd": int(rs["Qtd"]), "%": f"{pct_s:.1f}%",
+                "% CSAT": pf(cs_s), "TME": fmt_time(rs["TME"]), "TMA": fmt_time(rs["TMA"])
+            })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    filtro_fila  = st.sidebar.multiselect("Fila",       ["Core", "VIP", "VUPI", "URA", "Outros"], default=[])
-    lideres_disp = sorted(df_full["lider_final"].dropna().unique().tolist())
-    filtro_lider = st.sidebar.multiselect("Liderança",  lideres_disp, default=[])
-    filtro_cat   = st.sidebar.multiselect("Categoria Oportunidade", ["EstrelaBet", "Inove", "Cliente Discorda"], default=[])
-
-    df = df_full[
-        (df_full["data_ticket"].dt.date >= data_ini) &
-        (df_full["data_ticket"].dt.date <= data_fim)
-    ].copy()
-
-    if filtro_fila:  df = df[df["depara_fila"].isin(filtro_fila)]
-    if filtro_lider: df = df[df["lider_final"].isin(filtro_lider)]
-
-    df_feito       = df[df["status_ctl"] == "Feito"].copy()
-    df_feito_oport = df_feito[df_feito["cat_oport"].isin(filtro_cat)] if filtro_cat else df_feito
-
-    total     = len(df)
-    feitos    = len(df_feito)
-    pendentes = total - feitos
-    pct_feito = round(feitos / total * 100, 1) if total > 0 else 0
-    qtd_eb    = len(df_feito[df_feito["analise_csat"] == "EstrelaBet"])
-    qtd_inv   = len(df_feito[df_feito["analise_csat"] == "Inove"])
-    qtd_cd    = len(df_feito[df_feito["analise_csat"] == "Cliente Discorda"])
-    pct_eb    = round(qtd_eb  / feitos * 100, 1) if feitos > 0 else 0
-    pct_inv   = round(qtd_inv / feitos * 100, 1) if feitos > 0 else 0
-    pct_cd    = round(qtd_cd  / feitos * 100, 1) if feitos > 0 else 0
-
-    # ── MÉTRICAS ───────────────────────────────────────────────────────────
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("Total DSATs",      total)
-    c2.metric("CTL Feitos",       feitos)
-    c3.metric("% Feito",          f"{pct_feito}%")
-    c4.metric("Pendentes",        pendentes)
-    c5.metric("Oport. EB",        f"{qtd_eb} ({pct_eb}%)")
-    c6.metric("Oport. Inove",     f"{qtd_inv} ({pct_inv}%)")
-    c7.metric("Cli. Frustrado",   f"{qtd_cd} ({pct_cd}%)")
+# ── SIDEBAR ──
+with st.sidebar:
+    st.markdown("### 📅 Período")
+    ini_def,fim_def = default_dates()
+    data_inicio = st.date_input("De",  value=ini_def, key="dt_i")
+    data_fim    = st.date_input("Até", value=fim_def, key="dt_f")
     st.markdown("---")
-
-    # ── LINHA 1 ────────────────────────────────────────────────────────────
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Resumo Geral — Análise CSAT")
-        csat_c = df_feito["analise_csat"].value_counts().reset_index()
-        csat_c.columns = ["Análise", "Qtd"]
-        if not csat_c.empty:
-            fig = px.pie(csat_c, values="Qtd", names="Análise", hole=0.55,
-                         color="Análise", color_discrete_map=CORES_CSAT)
-            fig.update_traces(textposition="outside", textinfo="label+percent+value")
-            fig.update_layout(showlegend=True, margin=dict(t=20,b=20), height=320)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Sem dados no período.")
-
-    with col2:
-        st.subheader("DSATs e CTL por Fila")
-        ft = df.groupby("depara_fila").size().reset_index(name="Total DSATs")
-        ff = df_feito.groupby("depara_fila").size().reset_index(name="CTL Feitos")
-        fm = ft.merge(ff, on="depara_fila", how="left").fillna(0)
-        fm["CTL Feitos"] = fm["CTL Feitos"].astype(int)
-        fm = fm.sort_values("Total DSATs", ascending=False)
-        fig2 = go.Figure()
-        fig2.add_trace(go.Bar(name="Total DSATs", x=fm["depara_fila"], y=fm["Total DSATs"], marker_color="#B5D4F4"))
-        fig2.add_trace(go.Bar(name="CTL Feitos",  x=fm["depara_fila"], y=fm["CTL Feitos"],  marker_color="#1D9E75"))
-        fig2.update_layout(barmode="group", height=320, margin=dict(t=20,b=20), legend=dict(orientation="h"))
-        st.plotly_chart(fig2, use_container_width=True)
-
+    st.markdown("### 📡 Canal / Fila")
+    canais_sel = st.multiselect("Selecione",["Core","VIP","VUPI","URA","Outros"],default=["Core","VIP","VUPI"])
     st.markdown("---")
-
-    # ── LINHA 2 ────────────────────────────────────────────────────────────
-    col3, col4 = st.columns(2)
-    with col3:
-        st.subheader("Evolução Semanal — CTL Feitos")
-        dev = df_feito.copy()
-        dev["semana"] = dev["data_ticket"].dt.to_period("W").dt.start_time
-        evo = dev.groupby(["semana","analise_csat"]).size().reset_index(name="Qtd")
-        evo["semana"] = evo["semana"].dt.strftime("%d/%m")
-        if not evo.empty:
-            fig3 = px.bar(evo, x="semana", y="Qtd", color="analise_csat",
-                          color_discrete_map=CORES_CSAT,
-                          labels={"semana":"Semana","Qtd":"Qtd","analise_csat":"Análise"})
-            fig3.update_layout(height=320, margin=dict(t=20,b=20), legend=dict(orientation="h"))
-            st.plotly_chart(fig3, use_container_width=True)
-        else:
-            st.info("Sem dados no período.")
-
-    with col4:
-        st.subheader("Abertura por Liderança")
-        ld = df_feito[df_feito["lider_final"] != "Não mapeado"]
-        if not ld.empty:
-            lc = ld.groupby(["lider_final","analise_csat"]).size().reset_index(name="Qtd")
-            lt = lc.groupby("lider_final")["Qtd"].sum().reset_index(name="Total")
-            lc = lc.merge(lt, on="lider_final")
-            lc["pct"] = (lc["Qtd"] / lc["Total"] * 100).round(1)
-            lc = lc.sort_values("Total", ascending=True)
-            fig4 = px.bar(lc, x="pct", y="lider_final", color="analise_csat",
-                          orientation="h", color_discrete_map=CORES_CSAT, text="Qtd",
-                          labels={"pct":"%","lider_final":"Líder","analise_csat":"Análise"})
-            fig4.update_layout(height=320, margin=dict(t=20,b=20), legend=dict(orientation="h"), barmode="stack")
-            st.plotly_chart(fig4, use_container_width=True)
-        else:
-            st.info("Arquivo depara_lideranca.xlsx não encontrado no repositório." if not os.path.exists("depara_lideranca.xlsx") else "Sem dados de liderança mapeados no período.")
-
+    lideres_disp = sorted(df_dep["Depara Lider"].dropna().unique().tolist()) if len(df_dep)>0 else []
+    lider_global = st.multiselect("👤 Liderança",["Todos"]+lideres_disp,default=["Todos"])
+    lider_ativo  = None if ("Todos" in lider_global or not lider_global) else lider_global
     st.markdown("---")
-
-    # ── LINHA 3 ────────────────────────────────────────────────────────────
-    col5, col6 = st.columns(2)
-    with col5:
-        cat_label = " / ".join(filtro_cat) if filtro_cat else "Todas"
-        st.subheader(f"Top Oportunidades — {cat_label}")
-        oport = df_feito_oport[df_feito_oport["oportunidade"].notna() & (df_feito_oport["oportunidade"] != "")]
-        oc = oport["oportunidade"].value_counts().head(15).reset_index()
-        oc.columns = ["Oportunidade","Qtd"]
-        oc["Label"] = oc["Oportunidade"].str.replace(r"^(EstrelaBet|Inove|Cliente Frustrado)\s*[-–]\s*", "", regex=True)
-        if not oc.empty:
-            fig5 = px.bar(oc.sort_values("Qtd"), x="Qtd", y="Label", orientation="h",
-                          color_discrete_sequence=["#7F77DD"], labels={"Qtd":"Qtd","Label":""})
-            fig5.update_layout(height=420, margin=dict(t=20,b=20,l=10))
-            st.plotly_chart(fig5, use_container_width=True)
-        else:
-            st.info("Sem oportunidades no período/filtro.")
-
-    with col6:
-        st.subheader("DSATs por Nota")
-        nc = df["nota"].value_counts().sort_index().reset_index()
-        nc.columns = ["Nota","Qtd"]
-        nc = nc[nc["Nota"].notna()]
-        nc["Nota"] = nc["Nota"].apply(lambda x: f"Nota {int(x)}")
-        fig6 = px.bar(nc, x="Nota", y="Qtd", color_discrete_sequence=["#D85A30"], labels={"Qtd":"Quantidade"})
-        fig6.update_layout(height=200, margin=dict(t=20,b=20))
-        st.plotly_chart(fig6, use_container_width=True)
-
-        st.subheader("CTL por Assunto (Top 10)")
-        ac = df_feito["assunto"].value_counts().head(10).reset_index()
-        ac.columns = ["Assunto","Qtd"]
-        fig7 = px.bar(ac.sort_values("Qtd"), x="Qtd", y="Assunto", orientation="h",
-                      color_discrete_sequence=["#1D9E75"], labels={"Qtd":"Qtd","Assunto":""})
-        fig7.update_layout(height=260, margin=dict(t=10,b=10,l=10))
-        st.plotly_chart(fig7, use_container_width=True)
-
-
+    filtro_tag   = st.text_input("🏷️ Filtro TAG", placeholder="ex: Saque Recusado")
     st.markdown("---")
-
-    # ── INSIGHTS ───────────────────────────────────────────────────────────
-    st.subheader("💡 Insights do período")
-
-    col_i1, col_i2, col_i3 = st.columns(3)
-    min_dsats = 3
-
-    # --- OFENSORES: agentes com ocorrências Inove (falha do consultor) ---
-    with col_i1:
-        st.markdown("#### 🔴 Ofensores")
-        st.caption("Agentes com ocorrências Inove — falha no processo do consultor")
-        df_inove = df_feito[df_feito["analise_csat"] == "Inove"]
-        if df_inove.empty:
-            st.info("Nenhuma ocorrência Inove no período.")
-        else:
-            inove_ag = df_inove.groupby("nome_agente_final").size().reset_index(name="Ocorr. Inove")
-            total_ag = df.groupby("nome_agente_final").size().reset_index(name="DSATs")
-            inove_ag = inove_ag.merge(total_ag, on="nome_agente_final", how="left")
-            inove_ag["% Inove"] = (inove_ag["Ocorr. Inove"] / inove_ag["DSATs"] * 100).round(1)
-            inove_ag = inove_ag.sort_values("Ocorr. Inove", ascending=False).head(5)
-            for _, r in inove_ag.iterrows():
-                cor = "🔴" if r["% Inove"] >= 20 else "🟡"
-                st.markdown(f"{cor} **{r['nome_agente_final']}**")
-                st.caption(f"{int(r['DSATs'])} DSATs — {int(r['Ocorr. Inove'])} ocorr. Inove — {r['% Inove']}% do total")
-
-    # --- DESTAQUES: agentes com alto CTL e zero Inove ---
-    with col_i2:
-        st.markdown("#### 🟢 Destaques")
-        st.caption("Agentes com melhor CTL e sem ocorrências Inove")
-        op_dest = df.groupby("nome_agente_final").size().reset_index(name="DSATs")
-        op_feito_d = df_feito.groupby("nome_agente_final").size().reset_index(name="Feitos")
-        op_inove_d = df_feito[df_feito["analise_csat"]=="Inove"].groupby("nome_agente_final").size().reset_index(name="Inove")
-        op_dest = op_dest.merge(op_feito_d, on="nome_agente_final", how="left").fillna(0)
-        op_dest = op_dest.merge(op_inove_d, on="nome_agente_final", how="left").fillna(0)
-        op_dest["Feitos"] = op_dest["Feitos"].astype(int)
-        op_dest["Inove"]  = op_dest["Inove"].astype(int)
-        op_dest["% CTL"]  = (op_dest["Feitos"] / op_dest["DSATs"] * 100).round(1)
-        op_dest = op_dest[(op_dest["DSATs"] >= min_dsats) & (op_dest["Inove"] == 0)].sort_values("% CTL", ascending=False).head(5)
-        if op_dest.empty:
-            st.info("Sem dados suficientes.")
-        else:
-            for _, r in op_dest.iterrows():
-                cor = "🟢" if r["% CTL"] >= 80 else "🟡"
-                st.markdown(f"{cor} **{r['nome_agente_final']}**")
-                st.caption(f"{int(r['DSATs'])} DSATs — {int(r['Feitos'])} feitos — {r['% CTL']}% CTL — 0 Inove")
-
-    # --- COMPARATIVO SEMANAL ---
-    with col_i3:
-        st.markdown("#### 📊 Comparativo semanal")
-        hoje = pd.Timestamp.now(tz="America/Sao_Paulo")
-        ini_sem_atual  = (hoje - pd.Timedelta(days=hoje.weekday())).normalize()
-        ini_sem_ant    = ini_sem_atual - pd.Timedelta(weeks=1)
-        fim_sem_ant    = ini_sem_atual - pd.Timedelta(days=1)
-
-        sem_atual = df_full[df_full["data_ticket"] >= ini_sem_atual]
-        sem_ant   = df_full[(df_full["data_ticket"] >= ini_sem_ant) & (df_full["data_ticket"] <= fim_sem_ant)]
-
-        def resumo(d):
-            total = len(d)
-            feito = len(d[d["status_ctl"] == "Feito"])
-            pct   = round(feito / total * 100, 1) if total > 0 else 0
-            return total, feito, pct
-
-        t_a, f_a, p_a     = resumo(sem_atual)
-        t_ant, f_ant, p_ant = resumo(sem_ant)
-        delta_t = t_a - t_ant
-        delta_f = f_a - f_ant
-        delta_p = round(p_a - p_ant, 1)
-
-        st.metric("DSATs semana atual", t_a,  delta=f"{delta_t:+d} vs semana ant.")
-        st.metric("CTL feitos",         f_a,  delta=f"{delta_f:+d} vs semana ant.")
-        st.metric("% CTL",              f"{p_a}%", delta=f"{delta_p:+.1f}pp vs semana ant.")
-
-        inove_sem = len(sem_atual[sem_atual["analise_csat"]=="Inove"])
-        inove_ant = len(sem_ant[sem_ant["analise_csat"]=="Inove"])
-        st.metric("Ocorr. Inove",       inove_sem, delta=f"{inove_sem-inove_ant:+d} vs semana ant.", delta_color="inverse")
-
-        top_oport = sem_atual[sem_atual["status_ctl"]=="Feito"]["oportunidade"].value_counts().head(3)
-        if not top_oport.empty:
-            st.markdown("**Top oportunidades esta semana:**")
-            for o, q in top_oport.items():
-                label = str(o).replace("EstrelaBet - ","").replace("Inove - ","").replace("Cliente Frustrado – ","")
-                st.caption(f"• {label}: {q}")
-
+    filtro_cpf   = st.text_input("🔍 CPF")
+    filtro_email = st.text_input("✉️ E-mail")
     st.markdown("---")
+    st.caption(f"👤 {st.session_state.get('usuario','')} · {st.session_state.get('perfil','')}")
+    if st.button("Sair"):
+        for k in ["logado","usuario","perfil"]: st.session_state.pop(k,None)
+        st.rerun()
 
-    # ── ANÁLISE VOZ DO CLIENTE ─────────────────────────────────────────────
-    st.subheader("🗣️ Análise de Voz do Cliente")
+params = {"data_inicio":str(data_inicio),"data_fim":str(data_fim)+" 23:59:59"}
 
-    df_voz = df_feito[
-        df_feito["comentario_cliente"].notna() &
-        (df_feito["comentario_cliente"] != "") &
-        (df_feito["comentario_cliente"] != "—")
-    ].copy()
+# ── CARGA ──
+@st.cache_data(ttl=300, show_spinner="Carregando dados...")
+def load_base(di,df_): return run_query(SQL_BASE_GERAL,{"data_inicio":str(di),"data_fim":str(df_)+" 23:59:59"})
+@st.cache_data(ttl=300, show_spinner=False)
+def load_rec(di,df_):  return run_query(SQL_RECHAMADA, {"data_inicio":str(di),"data_fim":str(df_)+" 23:59:59"})
+@st.cache_data(ttl=300, show_spinner=False)
+def load_n1_(di,df_):  return run_query(SQL_N1,        {"data_inicio":str(di),"data_fim":str(df_)+" 23:59:59"})
 
-    col_v1, col_v2 = st.columns([1, 2])
-    with col_v1:
-        st.metric("Tickets com voz do cliente", len(df_voz))
-        st.metric("Sem comentário", feitos - len(df_voz))
+with st.spinner("Carregando dados..."):
+    df_raw = load_base(data_inicio,data_fim)
+    df_rec = load_rec(data_inicio,data_fim)
+    df_n1  = load_n1_(data_inicio,data_fim)
+    df_ctl = load_ctl(data_inicio,data_fim)
 
-        usuario_atual = st.session_state.get("usuario", "")
-        pode_usar_ia = usuario_atual in ("gestao", "admin") and ANTHROPIC_KEY
-        if not df_voz.empty and pode_usar_ia:
-            if st.button("🤖 Gerar análise com IA", use_container_width=True):
-                with st.spinner("Analisando observações e comentários..."):
-                    amostra_obs  = df_voz["observacao"].dropna().head(50).tolist()
-                    amostra_voz  = df_voz["comentario_cliente"].dropna().head(50).tolist()
-                    amostra_oport = df_voz["oportunidade"].dropna().head(50).tolist()
+# ── FILTROS ──
+def aplica(d):
+    if canais_sel: d=d[d["Depara_Fila"].isin(canais_sel)]
+    if filtro_tag: d=d[d["Depara_TAG1"].str.contains(filtro_tag,case=False,na=False)|d["Depara_SubTag"].str.contains(filtro_tag,case=False,na=False)]
+    if lider_ativo:
+        ags=df_dep[df_dep["Depara Lider"].isin(lider_ativo)]["AgentIdentity"].tolist()
+        d=d[d["humanAgent"].isin(ags)]
+    return d
 
-                    prompt = f"""Você é um analista de CX especialista em operações de atendimento.
-Analise os dados abaixo de {len(df_voz)} tickets DSAT tratados no Close the Loop da EstrelaBet.
+df      = aplica(df_raw.copy())
+df_rec_f= df_rec[df_rec["Depara_Fila"].isin(canais_sel)].copy() if canais_sel else df_rec.copy()
+# N1 URA: não filtrar por canal (URA pode não estar selecionado)
+df_n1_f = df_n1.copy()
 
-OBSERVAÇÕES DOS LÍDERES (amostra):
-{chr(10).join(f'- {o}' for o in amostra_obs if o)}
+if not df.empty:
+    df["Nome_Ag"] = df["humanAgent"].apply(nome_ag)
+    df["Lider"]   = df["humanAgent"].apply(lider_ag)
+    df["Hora_int"]= pd.to_numeric(df["Inicio_Hora"].str[:2],errors="coerce")
 
-VOZ DO CLIENTE (comentários das avaliações negativas):
-{chr(10).join(f'- {v}' for v in amostra_voz if v)}
-
-OPORTUNIDADES IDENTIFICADAS:
-{chr(10).join(f'- {p}' for p in amostra_oport if p)}
-
-Gere um relatório executivo em português com:
-1. **Principais temas recorrentes** na voz do cliente (máx 5 tópicos)
-2. **Padrões identificados** nas observações dos líderes
-3. **Correlações** entre o que o cliente reclama e a oportunidade identificada
-4. **Recomendações de negócio** (máx 3 ações prioritárias)
-
-Seja direto, use linguagem executiva. Máximo 400 palavras."""
-
-                    resp = requests.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers={
-                            "x-api-key": ANTHROPIC_KEY,
-                            "anthropic-version": "2023-06-01",
-                            "content-type": "application/json"
-                        },
-                        json={
-                            "model": "claude-sonnet-4-20250514",
-                            "max_tokens": 1000,
-                            "messages": [{"role": "user", "content": prompt}]
-                        },
-                        timeout=30
-                    )
-                    if resp.status_code == 200:
-                        analise = resp.json()["content"][0]["text"]
-                        st.session_state["analise_voz"] = analise
-                    else:
-                        st.error(f"Erro na API: {resp.status_code}")
-        elif not ANTHROPIC_KEY:
-            st.warning("Configure ANTHROPIC_KEY nos secrets do Streamlit para habilitar análise com IA.")
-        elif not df_voz.empty and not pode_usar_ia:
-            st.info("Análise com IA disponível apenas para gestão e admin.")
-
-    with col_v2:
-        if "analise_voz" in st.session_state:
-            st.markdown(st.session_state["analise_voz"])
-        elif not df_voz.empty:
-            # Análise simples sem IA
-            st.markdown("**Palavras mais frequentes nos comentários:**")
-            import re
-            from collections import Counter
-            stopwords = {"de","da","do","que","o","a","e","em","um","uma","com","para","por","não","no","na","se","os","as","ao","ou","mais","me","meu","minha","foi","pois","mas","já","ele","ela","seu","sua","isso","este","esta","esse","essa","tem","são","está"}
-            todos_comentarios = " ".join(df_voz["comentario_cliente"].dropna().tolist()).lower()
-            palavras = re.findall(r"[a-záéíóúâêîôûãõç]{4,}", todos_comentarios)
-            freq = Counter(w for w in palavras if w not in stopwords).most_common(15)
-            if freq:
-                freq_df = pd.DataFrame(freq, columns=["Palavra","Frequência"])
-                fig_voz = px.bar(freq_df.sort_values("Frequência"), x="Frequência", y="Palavra",
-                                 orientation="h", color_discrete_sequence=["#7F77DD"])
-                fig_voz.update_layout(height=350, margin=dict(t=10,b=10,l=10))
-                st.plotly_chart(fig_voz, use_container_width=True)
-        else:
-            st.info("Sem comentários de clientes no período selecionado.")
-
-    st.markdown("---")
-
-    # ── TABELA OPERADORES ──────────────────────────────────────────────────
-    st.subheader("Abertura por Operador")
-    ot = df.groupby("nome_agente_final").size().reset_index(name="Qtd DSAT")
-    of = df_feito.groupby("nome_agente_final").size().reset_index(name="CTL Feito")
-    ol = df[["nome_agente_final","lider_final"]].drop_duplicates("nome_agente_final")
-    om = ot.merge(of, on="nome_agente_final", how="left").fillna(0)
-    om = om.merge(ol, on="nome_agente_final", how="left")
-    om["CTL Feito"] = om["CTL Feito"].astype(int)
-    om["% Feito"]   = (om["CTL Feito"] / om["Qtd DSAT"] * 100).round(1).astype(str) + "%"
-    for cat in ["Cliente Discorda","EstrelaBet","Inove"]:
-        sub = df_feito[df_feito["analise_csat"]==cat].groupby("nome_agente_final").size().reset_index(name=f"Qtd {cat}")
-        om = om.merge(sub, on="nome_agente_final", how="left").fillna(0)
-        om[f"Qtd {cat}"] = om[f"Qtd {cat}"].astype(int)
-    om = om.sort_values("Qtd DSAT", ascending=False)
-    om.columns = ["Agente","Qtd DSAT","CTL Feito","Líder","% Feito","Cli. Discorda","EstrelaBet","Inove"]
-    om = om[["Agente","Líder","Qtd DSAT","CTL Feito","% Feito","Cli. Discorda","EstrelaBet","Inove"]]
-    st.dataframe(om, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ── EXTRAÇÃO ────────────────────────────────────────────────────────────
-    st.subheader("Extrair dados")
-
-    def gerar_excel(df_exp, sheet):
-        cols_map = {
-            "ticket_id":"Ticket","data_ticket":"Data","depara_fila":"Fila",
-            "nome_agente_final":"Agente","lider_final":"Líder",
-            "assunto":"Assunto","nota":"Nota","status_ctl":"Status",
-            "analise_csat":"Análise CSAT","oportunidade":"Oportunidade",
-            "observacao":"Observação","comentario_cliente":"Voz do Cliente",
-            "lider":"Analisado por","updated_at":"Data/Hora Análise",
+# ── CTL MAPS ──
+inove_map={}; ctl_feitos=ctl_cliente=ctl_inove=ctl_estrela=ctl_total=0
+ctl_ticket_map = {}  # ticket_id -> {analise_csat, observacao, lider}
+if not df_ctl.empty and "agente" in df_ctl.columns:
+    ctl_total=len(df_ctl)
+    ctl_feitos=(df_ctl["status_ctl"]=="Feito").sum()
+    ctl_cliente=(df_ctl["analise_csat"]=="Cliente Discorda").sum()
+    ctl_inove=(df_ctl["analise_csat"]=="Inove").sum()
+    ctl_estrela=(df_ctl["analise_csat"]=="EstrelaBet").sum()
+    ig=df_ctl[df_ctl["analise_csat"]=="Inove"].groupby("agente").size().reset_index(name="I")
+    tg2=df_ctl.groupby("agente").size().reset_index(name="T")
+    ct=ig.merge(tg2,on="agente",how="outer").fillna(0)
+    ct["pct"]=ct["I"]/ct["T"].replace(0,np.nan)
+    inove_map=dict(zip(ct["agente"],ct["pct"]))
+    # mapa ticket -> avaliação CTL
+    for _,r in df_ctl.iterrows():
+        ctl_ticket_map[str(r.get("ticket_id",""))] = {
+            "analise_csat": r.get("analise_csat",""),
+            "observacao":   r.get("observacao",""),
+            "lider":        r.get("lider",""),
         }
-        cols = [c for c in cols_map if c in df_exp.columns]
-        out  = df_exp[cols].copy()
-        out["data_ticket"] = pd.to_datetime(out["data_ticket"], errors="coerce").dt.strftime("%d/%m/%Y")
-        if "updated_at" in out.columns:
-            out["updated_at"] = pd.to_datetime(out["updated_at"], errors="coerce").dt.tz_convert("America/Sao_Paulo").dt.strftime("%d/%m/%Y %H:%M")
-        out.columns = [cols_map[c] for c in cols]
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as w:
-            out.to_excel(w, index=False, sheet_name=sheet)
-        return buf.getvalue()
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.download_button("⬇️ Exportar CTL Feitos (.xlsx)",
-            data=gerar_excel(df_feito, "CTL Feitos"),
-            file_name=f"ctl_feitos_{data_ini}_{data_fim}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True)
-    with c2:
-        st.download_button("⬇️ Exportar Todos DSATs (.xlsx)",
-            data=gerar_excel(df, "Todos DSATs"),
-            file_name=f"todos_dsats_{data_ini}_{data_fim}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True)
+# ── MÉTRICAS ──
+def calc_m(dg):
+    t=len(dg)
+    if t==0: return {}
+    inat=(dg["Deparas_Tickets"]=="Inatividade").sum()
+    perd=(dg["Deparas_Tickets"]=="Perdido").sum()
+    aval=dg["humanConversationEvaluation"].isin(["1","2","3","4","5"]).sum()
+    csat=dg["humanConversationEvaluation"].isin(["4","5"]).sum()
+    dsat=dg["humanConversationEvaluation"].isin(["1","2"]).sum()
+    ns=(dg["TME_segundos"]<60).sum()
+    tme=dg["TME_segundos"].mean(); tmpr=dg["TMPR_segundos"].mean(); tma=dg["TMA_segundos"].mean()
+    # Filtra rechamada pelos sequentialId do grupo — garante cálculo correto por dia/semana/fila
+    if "sequentialId" in dg.columns and not df_rec_f.empty and "sequentialId" in df_rec_f.columns:
+        ids = dg["sequentialId"].astype(str).tolist()
+        dr = df_rec_f[df_rec_f["sequentialId"].astype(str).isin(ids)]
+    elif "Depara_Fila" in dg.columns:
+        filas=dg["Depara_Fila"].unique().tolist()
+        dr=df_rec_f[df_rec_f["Depara_Fila"].isin(filas)]
+    else: dr=df_rec_f
+    rec=int(dr["Eh_Rechamada"].sum()) if len(dr)>0 else 0
+    fcr=int(dr["Eh_FCR"].sum()) if len(dr)>0 else 0
+    rb=len(dr) if len(dr)>0 else 1
+    return dict(T=t,Inat=inat,Perd=perd,Aval=aval,CSAT=csat,DSAT=dsat,NS=ns,
+                pFCR=fcr/rb,pRec=rec/rb,pNS=ns/t,pInat=inat/t,pPerd=perd/t,
+                pCSAT=csat/aval if aval>0 else None,pRR=aval/t,TME=tme,TMPR=tmpr,TMA=tma)
 
-# ── PÁGINA: FILA ──────────────────────────────────────────────────────────────
-def pagina_fila():
-    st.title("Fila de DSATs — Close the Loop")
-    st.caption(f"Logado como: **{st.session_state['lider']}**")
+# ════════════════════════════════════════
+tabs = st.tabs(["📊 Weekly","⏰ Abertura Dia","🔥 Intra-Hora","😊 CSAT",
+                "👤 Operadores","🎯 Estratégica","💬 DSATs & CTL",
+                "🔍 Consulta Cliente","⚡ Insights","📋 Report VIP","📓 Diário + IA"])
 
-    c1, c2 = st.columns(2)
-    with c1: data_ini = st.date_input("Data início", value=primeiro_dia_mes())
-    with c2: data_fim = st.date_input("Data fim",    value=date.today())
-    c3, c4, c5, c6 = st.columns(4)
-    with c3: filtro_status  = st.selectbox("Status", ["Pendente","Feito","Todos"])
-    with c4: filtro_agente  = st.text_input("Filtrar por agente", "")
-    with c5: filtro_assunto = st.text_input("Filtrar por assunto", "")
+# ── ABA 1: WEEKLY ──
+with tabs[0]:
+    st.markdown('<div class="ph"><span class="pt">ABERTURA DIA — Weekly</span><span class="pl">W●INOVE</span></div>',unsafe_allow_html=True)
+    if df.empty: st.warning("Sem dados.")
+    else:
+        rows=[]
+        for fila in sorted(df["Depara_Fila"].unique()):
+            df_f=df[df["Depara_Fila"]==fila]; m=calc_m(df_f)
+            rows.append({"Fila":f"▶ {fila}",**m})
+            for sem in sorted(df_f["Semana"].unique()):
+                df_s=df_f[df_f["Semana"]==sem]; ms=calc_m(df_s)
+                rows.append({"Fila":f"  {sem}",**ms})
+                # dias dentro da semana
+                for dia in sorted(df_s["Depara_Data"].unique()):
+                    df_d=df_s[df_s["Depara_Data"]==dia]; md=calc_m(df_d)
+                    dia_fmt=str(dia)[-5:] if len(str(dia))>=5 else str(dia)
+                    rows.append({"Fila":f"    {dia_fmt}",**md})
+        mg=calc_m(df); rows.append({"Fila":"Total",**mg})
+        d=pd.DataFrame(rows); out=pd.DataFrame()
+        out["Fila"]=d["Fila"]; out["Tickets"]=d["T"]
+        out["% FCR"]=d["pFCR"].apply(pf); out["% Rechamada"]=d["pRec"].apply(pf)
+        out["% NS"]=d["pNS"].apply(pf); out["% Inat"]=d["pInat"].apply(pf); out["% Perd"]=d["pPerd"].apply(pf)
+        out["Qtd Aval"]=d["Aval"]; out["Qtd CSAT"]=d["CSAT"]; out["Qtd DSAT"]=d["DSAT"]
+        out["% CSAT"]=d["pCSAT"].apply(pf); out["% RR"]=d["pRR"].apply(pf)
+        out["TME"]=d["TME"].apply(fmt_time); out["TMPR"]=d["TMPR"].apply(fmt_time); out["TMA"]=d["TMA"].apply(fmt_time)
+        st.dataframe(out,use_container_width=True,hide_index=True,height=460)
+        st.download_button("⬇️ Download Excel",to_xl(out),"weekly.xlsx",key="dl_weekly")
+        st.markdown("#### Drill-down por TAG")
+        drill_tag_subtag(df, key_prefix="weekly_drill")
 
-    df = carregar_fila()
-    if df.empty:
-        st.info("Nenhum registro encontrado.")
-        return
+# ── ABA 2: ABERTURA DIA ──
+with tabs[1]:
+    st.markdown('<div class="ph"><span class="pt">ABERTURA DIA — Tempos & Volume</span><span class="pl">W●INOVE</span></div>',unsafe_allow_html=True)
+    if df.empty: st.warning("Sem dados.")
+    else:
+        met=st.radio("Métrica",["TME","TMPR","TMA"],horizontal=True,key="met_ab")
+        col_m={"TME":"TME_segundos","TMPR":"TMPR_segundos","TMA":"TMA_segundos"}[met]
+        grp=df.groupby(["Hora_int","Depara_Fila"])[col_m].mean().reset_index(); grp["min"]=grp[col_m]/60
+        fig=go.Figure()
+        for fila in grp["Depara_Fila"].unique():
+            sub=grp[grp["Depara_Fila"]==fila]
+            fig.add_trace(go.Scatter(x=sub["Hora_int"],y=sub["min"],mode="lines+markers",name=fila,
+                line=dict(color=CORES.get(fila,"#aaa"),width=2.5),marker=dict(size=7),
+                hovertemplate=f"<b>{fila}</b><br>Hora: %{{x}}h<br>{met}: %{{y:.1f}} min<extra></extra>"))
+        fig.update_layout(title=f"{met} médio por hora",paper_bgcolor="#071228",plot_bgcolor="#071228",
+            font=dict(color="#e0ecff",size=12),height=320,
+            xaxis=dict(tickmode="linear",dtick=1,title="Hora",tickfont=dict(size=11,color="#c8d8f0"),gridcolor="#1a2f52"),
+            yaxis=dict(title=f"{met} (min)",tickfont=dict(size=11,color="#c8d8f0"),gridcolor="#1a2f52"),
+            legend=dict(bgcolor="#0d1b3e",bordercolor="#1e3a70",borderwidth=1,font=dict(color="#e0ecff",size=12)),
+            margin=dict(l=60,r=20,t=50,b=40))
+        st.plotly_chart(fig,use_container_width=True,key="chart_tme")
 
-    lideres_fila = sorted(df["lider_final"].dropna().unique().tolist())
-    with c6: filtro_lider_fila = st.selectbox("Liderança", ["Todos"] + lideres_fila)
+        st.markdown(f"#### {met} por Fila × Hora")
+        pv=df.groupby(["Depara_Fila","Hora_int"])[col_m].mean().reset_index()
+        pv["fmt"]=pv[col_m].apply(fmt_time)
+        tbl=pv.pivot(index="Depara_Fila",columns="Hora_int",values="fmt").fillna("—")
+        tbl.columns=[f"{int(c):02d}:00" for c in tbl.columns]
+        st.dataframe(tbl,use_container_width=True)
 
-    mask = (df["data_ticket"].dt.date >= data_ini) & (df["data_ticket"].dt.date <= data_fim)
-    df   = df[mask]
-    if filtro_status != "Todos":
-        df = df[df["status_ctl"] == filtro_status]
-    if filtro_agente:
-        df = df[df["agente"].astype(str).str.contains(filtro_agente, case=False, na=False)]
-    if filtro_assunto:
-        df = df[df["assunto"].astype(str).str.contains(filtro_assunto, case=False, na=False)]
-    if filtro_lider_fila != "Todos":
-        df = df[df["lider_final"] == filtro_lider_fila]
+        st.markdown("#### Volume por TAG × Hora")
+        vol=df.groupby(["Depara_TAG1","Hora_int"]).size().reset_index(name="Qtd")
+        piv=vol.pivot(index="Depara_TAG1",columns="Hora_int",values="Qtd").fillna(0).astype(int)
+        piv.columns=[f"{int(c):02d}:00" for c in piv.columns]
+        render_hm(piv,key_dl="dl_vol_hora")
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Total",        len(df))
-    m2.metric("🔴 Pendentes", int((df["status_ctl"]=="Pendente").sum()))
-    m3.metric("🟢 Feitos",    int((df["status_ctl"]=="Feito").sum()))
+# ── ABA 3: INTRA-HORA ──
+with tabs[2]:
+    st.markdown('<div class="ph"><span class="pt">ANÁLISE INTRA-HORA</span><span class="pl">●INOVE</span></div>',unsafe_allow_html=True)
+    visao=st.radio("Visão",["TAG × Hora","TAG × Dia","URA (N1)","N1 — Novo Motivo"],horizontal=True)
+
+    if visao=="TAG × Hora":
+        if df.empty: st.warning("Sem dados.")
+        else:
+            vol=df.groupby(["Depara_TAG1","Hora_int"]).size().reset_index(name="Qtd")
+            piv=vol.pivot(index="Depara_TAG1",columns="Hora_int",values="Qtd").fillna(0).astype(int)
+            piv.columns=[f"{int(c):02d}:00" for c in piv.columns]
+            render_hm(piv,key_dl="dl_ih_hora")
+    elif visao=="TAG × Dia":
+        if df.empty: st.warning("Sem dados.")
+        else:
+            vol=df.groupby(["Depara_TAG1","Depara_Data"]).size().reset_index(name="Qtd")
+            piv=vol.pivot(index="Depara_TAG1",columns="Depara_Data",values="Qtd").fillna(0).astype(int)
+            piv.columns=[str(c) for c in piv.columns]
+            render_hm(piv,key_dl="dl_ih_dia")
+    elif visao=="URA (N1)":
+        # URA: usa df_n1 SEM filtro de canal
+        df_ura=df_n1[df_n1["Depara_Fila"]=="URA"] if not df_n1.empty else pd.DataFrame()
+        if df_ura.empty: st.warning("Sem dados URA no período. Verifique se a tabela n1 tem registros com fila URA.")
+        else:
+            res=df_ura.groupby("Novo_Motivo").size().reset_index(name="QTD")
+            res["%"]=(res["QTD"]/res["QTD"].sum()*100).round(2).astype(str)+"%"
+            res=res.sort_values("QTD",ascending=False)
+            st.dataframe(res,use_container_width=True,hide_index=True)
+            vol=df_ura.groupby(["Novo_Motivo","Hora"]).size().reset_index(name="Qtd")
+            piv=vol.pivot(index="Novo_Motivo",columns="Hora",values="Qtd").fillna(0).astype(int)
+            piv.columns=[f"{int(c):02d}:00" for c in piv.columns]
+            render_hm(piv,key_dl="dl_ura")
+    else:
+        if df_n1_f.empty: st.warning("Sem dados N1.")
+        else:
+            vol=df_n1_f.groupby(["Novo_Motivo","Hora"]).size().reset_index(name="Qtd")
+            piv=vol.pivot(index="Novo_Motivo",columns="Hora",values="Qtd").fillna(0).astype(int)
+            piv.columns=[f"{int(c):02d}:00" for c in piv.columns]
+            render_hm(piv,key_dl="dl_n1")
+
+# ── ABA 4: CSAT ──
+with tabs[3]:
+    st.markdown('<div class="ph"><span class="pt">CSAT — EstrelaBet</span><span class="pl">ESTRELA★BET</span></div>',unsafe_allow_html=True)
+    if df.empty: st.warning("Sem dados.")
+    else:
+        t_at=len(df); t_av=df["humanConversationEvaluation"].isin(["1","2","3","4","5"]).sum()
+        t_cs=df["humanConversationEvaluation"].isin(["4","5"]).sum()
+        t_ds=df["humanConversationEvaluation"].isin(["1","2"]).sum()
+        t_ne=(df["humanConversationEvaluation"]=="3").sum()
+        rr=t_av/t_at if t_at>0 else 0; cs_p=t_cs/t_av if t_av>0 else 0
+        cs_cls="kr-green" if cs_p>=META_CSAT else ("kr-yellow" if cs_p>=0.80 else "kr-red")
+        st.markdown(f"""<div class="kr">
+            {kpi("Atendido",f"{t_at:,}")}{kpi("Avaliado",f"{t_av:,}")}
+            {kpi("CSAT",f"{t_cs:,}",f"{cs_p:.1%}",cs_cls)}
+            {kpi("Neutro",f"{t_ne:,}",f"{t_ne/t_av:.1%}" if t_av>0 else "—")}
+            {kpi("DSAT",f"{t_ds:,}",f"{t_ds/t_av:.1%}" if t_av>0 else "—","kr-red" if t_av>0 and t_ds/t_av>0.15 else "")}
+            {kpi("Response Rate",f"{rr:.1%}")}
+        </div>""",unsafe_allow_html=True)
+
+        lid_csat=st.multiselect("Liderança",["Todos"]+sorted(df["Lider"].dropna().unique().tolist()),default=["Todos"],key="lid_csat")
+        df_c=df if "Todos" in lid_csat or not lid_csat else df[df["Lider"].isin(lid_csat)]
+
+        c1,c2=st.columns(2)
+        with c1:
+            st.markdown("#### Resumo por Dia")
+            dg=df_c.groupby("Depara_Data").agg(
+                Qtd=("sequentialId","count"),
+                Aval=("humanConversationEvaluation",lambda x:x.isin(["1","2","3","4","5"]).sum()),
+                CSAT=("humanConversationEvaluation",lambda x:x.isin(["4","5"]).sum()),
+            ).reset_index()
+            dg["Mês"]=pd.to_datetime(dg["Depara_Data"]).dt.strftime("%b"); dg["Dia"]=pd.to_datetime(dg["Depara_Data"]).dt.day
+            dg["% CSAT"]=(dg["CSAT"]/dg["Aval"].replace(0,np.nan)*100).round(1).astype(str)+"%"
+            dg["% RR"]=(dg["Aval"]/dg["Qtd"].replace(0,np.nan)*100).round(1).astype(str)+"%"
+            out_dia=dg[["Mês","Dia","Qtd","Aval","% CSAT","% RR"]]
+            st.dataframe(out_dia,use_container_width=True,hide_index=True,height=340)
+            st.download_button("⬇️ Download Dia",to_xl(out_dia),"csat_dia.xlsx",key="dl_csat_dia")
+        with c2:
+            st.markdown("#### Abertura por Operador")
+            og=df_c.groupby("humanAgent").agg(
+                Qtd=("sequentialId","count"),
+                Aval=("humanConversationEvaluation",lambda x:x.isin(["1","2","3","4","5"]).sum()),
+                CSAT=("humanConversationEvaluation",lambda x:x.isin(["4","5"]).sum()),
+                TME_a=("TME_segundos","mean"),TMPR_a=("TMPR_segundos","mean"),TMA_a=("TMA_segundos","mean"),
+            ).reset_index()
+            og["Nome"]=og["humanAgent"].apply(nome_ag); og["Líder"]=og["humanAgent"].apply(lider_ag)
+            og["% CSAT"]=(og["CSAT"]/og["Aval"].replace(0,np.nan)*100).round(1).astype(str)+"%"
+            og["% RR"]=(og["Aval"]/og["Qtd"].replace(0,np.nan)*100).round(1).astype(str)+"%"
+            og["% Inove"]=og["humanAgent"].map(inove_map).apply(lambda x:f"{x:.1%}" if pd.notna(x) else "—")
+            og["TME"]=og["TME_a"].apply(fmt_time); og["TMPR"]=og["TMPR_a"].apply(fmt_time); og["TMA"]=og["TMA_a"].apply(fmt_time)
+            og=og.sort_values("Qtd",ascending=False)
+            out_op=og[["Nome","Líder","Qtd","Aval","% CSAT","% Inove","% RR","TME","TMPR","TMA"]]
+            st.dataframe(out_op,use_container_width=True,hide_index=True,height=340)
+            st.download_button("⬇️ Download Operadores",to_xl(out_op),"csat_op.xlsx",key="dl_csat_op")
+
+        st.markdown("#### Drill-down por TAG → SubTag")
+        drill_tag_subtag(df_c, key_prefix="csat_drill")
+
+# ── ABA 5: OPERADORES ──
+with tabs[4]:
+    st.markdown('<div class="ph"><span class="pt">VISÃO POR OPERADOR — Feedback</span><span class="pl">●INOVE</span></div>',unsafe_allow_html=True)
+    if df.empty: st.warning("Sem dados.")
+    else:
+        lid_op=st.multiselect("Liderança",["Todos"]+sorted(df["Lider"].dropna().unique().tolist()),default=["Todos"],key="lid_op")
+        df_op_f=df if "Todos" in lid_op or not lid_op else df[df["Lider"].isin(lid_op)]
+        op_sel=st.selectbox("Selecione o operador",["Todos"]+sorted(df_op_f["Nome_Ag"].dropna().unique().tolist()),key="op_sel")
+        df_op=df_op_f if op_sel=="Todos" else df_op_f[df_op_f["Nome_Ag"]==op_sel]
+
+        t_op=len(df_op); av_op=df_op["humanConversationEvaluation"].isin(["1","2","3","4","5"]).sum()
+        cs_op=df_op["humanConversationEvaluation"].isin(["4","5"]).sum()
+        ds_op=df_op["humanConversationEvaluation"].isin(["1","2"]).sum()
+        tme_op=df_op["TME_segundos"].mean(); tma_op=df_op["TMA_segundos"].mean()
+        ns_op=(df_op["TME_segundos"]<60).sum()
+        cs_pct=cs_op/av_op if av_op>0 else 0
+        tma_cls="kr-green" if pd.notna(tma_op) and tma_op<=META_TMA else ("kr-yellow" if pd.notna(tma_op) and tma_op<=META_TMA*1.2 else "kr-red")
+        cs_cls2="kr-green" if cs_pct>=META_CSAT else ("kr-yellow" if cs_pct>=0.80 else "kr-red")
+
+        # Inove do operador - busca pelo email mais frequente do agente selecionado
+        if op_sel != "Todos" and len(df_op) > 0:
+            # pega o email original (humanAgent) do operador selecionado
+            agent_emails = df_op["humanAgent"].value_counts()
+            agent_email = agent_emails.index[0] if len(agent_emails) > 0 else None
+            inove_op = inove_map.get(agent_email, np.nan) if agent_email else np.nan
+        else:
+            agent_email = None
+            # para "Todos": mostra média geral do inove_map para os agentes no grupo
+            if inove_map and len(df_op) > 0:
+                emails_grupo = df_op["humanAgent"].unique().tolist()
+                vals = [inove_map[e] for e in emails_grupo if e in inove_map and pd.notna(inove_map[e])]
+                inove_op = np.mean(vals) if vals else np.nan
+            else:
+                inove_op = np.nan
+        inove_cls = "kr-red" if pd.notna(inove_op) and inove_op>0.15 else ("kr-yellow" if pd.notna(inove_op) and inove_op>0.05 else "kr-green")
+
+        # linha 1
+        st.markdown(f"""<div class="kr">
+            {kpi("Tickets",f"{t_op:,}")}
+            {kpi("Avaliações",f"{av_op:,}")}
+            {kpi("CSAT",f"{cs_op:,}",f"{cs_pct:.1%}",cs_cls2)}
+            {kpi("DSAT",f"{ds_op:,}",f"{ds_op/av_op:.1%}" if av_op>0 else "—")}
+            {kpi("% NS",f"{ns_op/t_op:.1%}" if t_op>0 else "—")}
+        </div>""",unsafe_allow_html=True)
+        # linha 2
+        st.markdown(f"""<div class="kr">
+            {kpi("TME",fmt_time(tme_op))}
+            {kpi("TMA",fmt_time(tma_op),"Meta: 15:00",tma_cls)}
+            {kpi("% Inove CTL",f"{inove_op:.1%}" if pd.notna(inove_op) else "—","Condução atend.",inove_cls)}
+        </div>""",unsafe_allow_html=True)
+
+        c1,c2=st.columns(2)
+        with c1:
+            st.markdown("#### Evolução diária — CSAT")
+            ev=df_op.groupby("Depara_Data").agg(
+                Qtd=("sequentialId","count"),
+                CSAT=("humanConversationEvaluation",lambda x:x.isin(["4","5"]).sum()),
+                Aval=("humanConversationEvaluation",lambda x:x.isin(["1","2","3","4","5"]).sum()),
+            ).reset_index()
+            ev["pct"]=ev["CSAT"]/ev["Aval"].replace(0,np.nan)*100
+            fig_ev=go.Figure()
+            fig_ev.add_trace(go.Bar(x=ev["Depara_Data"],y=ev["Qtd"],name="Tickets",marker_color="#1e3a70",yaxis="y2",opacity=0.6))
+            fig_ev.add_trace(go.Scatter(x=ev["Depara_Data"],y=ev["pct"],name="% CSAT",
+                line=dict(color="#4fc3f7",width=2.5),mode="lines+markers",marker=dict(size=7)))
+            fig_ev.add_hline(y=90,line_dash="dash",line_color="#69db7c",
+                annotation_text="Meta 90%",annotation_font_color="#69db7c",annotation_font_size=11)
+            fig_ev.update_layout(paper_bgcolor="#071228",plot_bgcolor="#071228",font=dict(color="#e0ecff"),height=280,
+                yaxis=dict(title="% CSAT",tickfont=dict(color="#a8c4e8"),gridcolor="#1a2f52"),
+                yaxis2=dict(title="Tickets",overlaying="y",side="right",tickfont=dict(color="#a8c4e8")),
+                legend=dict(bgcolor="#0d1b3e",font=dict(color="#e0ecff")),margin=dict(l=50,r=50,t=30,b=40))
+            st.plotly_chart(fig_ev,use_container_width=True,key="chart_ev")
+
+        with c2:
+            st.markdown("#### Produtividade")
+            if op_sel=="Todos":
+                prod=df_op.groupby("Nome_Ag").agg(
+                    Prod=("Deparas_Tickets",lambda x:(x=="Produtivo").sum()),
+                    Inat=("Deparas_Tickets",lambda x:(x=="Inatividade").sum()),
+                    Perd=("Deparas_Tickets",lambda x:(x=="Perdido").sum()),
+                    Tot=("sequentialId","count"),
+                ).reset_index()
+                for k in ["Prod","Inat","Perd"]: prod[f"p{k}"]=prod[k]/prod["Tot"]
+                prod=prod.sort_values("pProd",ascending=True).tail(20)
+                fig_pr=go.Figure()
+                for k,cor,lbl in [("pProd","#4fc3f7","Produtivo"),("pInat","#ffa726","Inatividade"),("pPerd","#ef5350","Perdido")]:
+                    fig_pr.add_trace(go.Bar(y=prod["Nome_Ag"],x=prod[k],name=lbl,orientation="h",
+                        marker_color=cor,text=(prod[k]*100).round(1).astype(str)+"%",
+                        textposition="inside",textfont=dict(color="white",size=9)))
+                fig_pr.update_layout(barmode="stack",height=max(280,len(prod)*20+60),
+                    paper_bgcolor="#071228",plot_bgcolor="#071228",font=dict(color="#e0ecff"),
+                    xaxis=dict(tickformat=".0%",autorange="reversed",tickfont=dict(color="#a8c4e8")),
+                    yaxis=dict(tickfont=dict(color="#e0ecff",size=10)),
+                    legend=dict(orientation="h",y=1.05,bgcolor="#0d1b3e",font=dict(color="#e0ecff")),
+                    margin=dict(l=140,r=20,t=40,b=20))
+                st.plotly_chart(fig_pr,use_container_width=True,key="chart_prod_op")
+            else:
+                prod_row=df_op["Deparas_Tickets"].value_counts()
+                st.metric("Produtivo",f"{prod_row.get('Produtivo',0)} ({prod_row.get('Produtivo',0)/t_op:.1%})")
+                st.metric("Inatividade",f"{prod_row.get('Inatividade',0)} ({prod_row.get('Inatividade',0)/t_op:.1%})")
+                st.metric("Perdido",f"{prod_row.get('Perdido',0)} ({prod_row.get('Perdido',0)/t_op:.1%})")
+
+        st.markdown("#### Drill-down por TAG → SubTag")
+        drill_tag_subtag(df_op, key_prefix="op_drill")
+
+# ── ABA 6: ESTRATÉGICA ──
+with tabs[5]:
+    st.markdown('<div class="ph"><span class="pt">ANÁLISE ESTRATÉGICA POR TEMA</span><span class="pl">●INOVE</span></div>',unsafe_allow_html=True)
+    if df.empty: st.warning("Sem dados.")
+    else:
+        fc1,fc2=st.columns(2)
+        with fc1:
+            lid_est=st.multiselect("Liderança",["Todos"]+sorted(df["Lider"].dropna().unique().tolist()),default=["Todos"],key="lid_est")
+        df_e=df if "Todos" in lid_est or not lid_est else df[df["Lider"].isin(lid_est)]
+        with fc2:
+            op_est=st.multiselect("Operador",["Todos"]+sorted(df_e["Nome_Ag"].dropna().unique().tolist()),default=["Todos"],key="op_est")
+        if "Todos" not in op_est and op_est: df_e=df_e[df_e["Nome_Ag"].isin(op_est)]
+
+        c1,c2=st.columns([1,1.5])
+        with c1:
+            prod=df_e.groupby("Nome_Ag").agg(
+                Prod=("Deparas_Tickets",lambda x:(x=="Produtivo").sum()),
+                Inat=("Deparas_Tickets",lambda x:(x=="Inatividade").sum()),
+                Perd=("Deparas_Tickets",lambda x:(x=="Perdido").sum()),
+                Tot=("sequentialId","count"),
+            ).reset_index()
+            for k in ["Prod","Inat","Perd"]: prod[f"p{k}"]=prod[k]/prod["Tot"]
+            prod=prod.sort_values("pProd",ascending=True).tail(25)
+            fig_p=go.Figure()
+            for k,cor,lbl in [("pProd","#4fc3f7","Produtivo"),("pInat","#ffa726","Inatividade"),("pPerd","#ef5350","Perdido")]:
+                fig_p.add_trace(go.Bar(y=prod["Nome_Ag"],x=prod[k],name=lbl,orientation="h",
+                    marker_color=cor,text=(prod[k]*100).round(1).astype(str)+"%",
+                    textposition="inside",textfont=dict(color="white",size=9)))
+            fig_p.update_layout(barmode="stack",title="Produtividade",
+                height=max(380,len(prod)*21+70),paper_bgcolor="#071228",plot_bgcolor="#071228",
+                font=dict(color="#e0ecff"),xaxis=dict(tickformat=".0%",autorange="reversed",tickfont=dict(color="#a8c4e8")),
+                yaxis=dict(tickfont=dict(color="#e0ecff",size=10)),
+                legend=dict(orientation="h",y=1.05,bgcolor="#0d1b3e",font=dict(color="#e0ecff")),
+                margin=dict(l=150,r=20,t=50,b=20))
+            st.plotly_chart(fig_p,use_container_width=True,key="chart_prod")
+            st.download_button("⬇️ Download",to_xl(prod),"prod.xlsx",key="dl_prod")
+
+        with c2:
+            tg=df_e.groupby("Depara_TAG1").agg(
+                Qtd=("sequentialId","count"),
+                CSAT=("humanConversationEvaluation",lambda x:x.isin(["4","5"]).sum()),
+                Aval=("humanConversationEvaluation",lambda x:x.isin(["1","2","3","4","5"]).sum()),
+                TME_a=("TME_segundos","mean"),TMPR_a=("TMPR_segundos","mean"),TMA_a=("TMA_segundos","mean"),
+            ).reset_index()
+            if not df_rec_f.empty and "Depara_TAG1" in df_rec_f.columns:
+                rt=df_rec_f.groupby("Depara_TAG1").agg(FCR=("Eh_FCR","sum"),Rec=("Eh_Rechamada","sum"),B=("sequentialId","count")).reset_index()
+                tg=tg.merge(rt,on="Depara_TAG1",how="left")
+                tg["pFCR"]=tg["FCR"]/tg["B"].replace(0,np.nan); tg["pRec"]=tg["Rec"]/tg["B"].replace(0,np.nan)
+            else: tg["pFCR"]=tg["pRec"]=np.nan
+            tot=tg["Qtd"].sum()
+            tg["%"]=(tg["Qtd"]/tot*100).round(2).astype(str)+"%"
+            tg["% CSAT"]=(tg["CSAT"]/tg["Aval"].replace(0,np.nan)*100).round(1).astype(str)+"%"
+            tg["% RR"]=(tg["Aval"]/tg["Qtd"].replace(0,np.nan)*100).round(1).astype(str)+"%"
+            tg["% FCR"]=tg["pFCR"].apply(pf); tg["% Rec"]=tg["pRec"].apply(pf)
+            tg["TME"]=tg["TME_a"].apply(fmt_time); tg["TMPR"]=tg["TMPR_a"].apply(fmt_time); tg["TMA"]=tg["TMA_a"].apply(fmt_time)
+            tg=tg.sort_values("Qtd",ascending=False)
+            out_tg=tg[["Depara_TAG1","Qtd","%","TME","TMPR","TMA","% CSAT","% RR","% FCR","% Rec"]].rename(columns={"Depara_TAG1":"TAG"})
+            st.markdown("#### Resumo por Tema")
+            st.dataframe(out_tg,use_container_width=True,hide_index=True,height=460)
+            st.download_button("⬇️ Download TAG",to_xl(out_tg),"tag.xlsx",key="dl_tag")
+
+        st.markdown("#### Drill-down TAG → SubTag")
+        drill_tag_subtag(df_e, key_prefix="est_drill")
+
+# ── ABA 7: DSATs & CTL ──
+with tabs[6]:
+    st.markdown('<div class="ph"><span class="pt">DSATs & CLOSE THE LOOP</span><span class="pl">ESTRELA★BET</span></div>',unsafe_allow_html=True)
+    df_ds=df[df["humanConversationEvaluation"].isin(["1","2","3"])]
+    base_p=max(ctl_total,1)
+    st.markdown(f"""<div class="kr">
+        {kpi("Qtd DSAT",f"{len(df_ds):,}")}
+        {kpi("CTL Feitos",f"{ctl_feitos:,}",f"{ctl_feitos/base_p:.1%}")}
+        {kpi("Oport. Cliente",f"{ctl_cliente:,}",f"{ctl_cliente/base_p:.1%}")}
+        {kpi("Oport. Inove",f"{ctl_inove:,}",f"{ctl_inove/base_p:.1%}")}
+        {kpi("Oport. Estrela",f"{ctl_estrela:,}",f"{ctl_estrela/base_p:.1%}")}
+    </div>""",unsafe_allow_html=True)
+
+    if not df_ds.empty:
+        vol_ds=df_ds.groupby(["Depara_TAG1","Hora_int"]).size().reset_index(name="Qtd")
+        piv_ds=vol_ds.pivot(index="Depara_TAG1",columns="Hora_int",values="Qtd").fillna(0).astype(int)
+        piv_ds.columns=[f"{int(c):02d}:00" for c in piv_ds.columns]
+        render_hm(piv_ds,key_dl="dl_dsat_hm")
+        st.markdown("#### Drill-down TAG → SubTag (DSATs)")
+        drill_tag_subtag(df_ds, key_prefix="dsat_drill")
+    else: st.info("Nenhum DSAT no período.")
+
+# ── ABA 8: CONSULTA CLIENTE ──
+with tabs[7]:
+    st.markdown('<div class="ph"><span class="pt">CONSULTA CLIENTE</span><span class="pl">●INOVE</span></div>',unsafe_allow_html=True)
+    c1,c2=st.columns(2)
+    with c1: cpf_in=st.text_input("🔍 CPF",value=filtro_cpf,key="cpf_tab")
+    with c2: eml_in=st.text_input("✉️ E-mail",value=filtro_email,key="email_tab")
+
+    if st.button("Buscar histórico",type="primary"):
+        if cpf_in or eml_in:
+            with st.spinner("Buscando..."):
+                df_cli=run_query(SQL_CLIENTE,{
+                    "cpf":  f"%{cpf_in}%"  if cpf_in  else None,
+                    "email":f"%{eml_in}%" if eml_in else None,
+                })
+            if df_cli.empty: st.warning("Nenhum registro encontrado.")
+            else:
+                r=df_cli.iloc[0]
+                st.success(f"**{r.get('Nome','—')}** · CPF: `{r.get('CPF','—')}` · Fone: `{r.get('Fone','—')}` · E-mail: `{r.get('Email','—')}`")
+                cm1,cm2,cm3=st.columns(3)
+                cm1.metric("Total atendimentos",len(df_cli))
+                cm2.metric("DSATs",int(df_cli["Avaliacao"].isin(["1","2","3"]).sum()))
+                cm3.metric("Positivas",int(df_cli["Avaliacao"].isin(["4","5"]).sum()))
+
+                st.markdown("#### 🗺️ Jornada do Cliente")
+                df_j=df_cli.sort_values("Data")
+                emoji_m={"1":"😡","2":"😠","3":"😐","4":"😊","5":"😄"}
+                html='<div style="padding:8px">'
+                for _,rw in df_j.iterrows():
+                    nota=str(rw.get("Avaliacao","")) if pd.notna(rw.get("Avaliacao")) else "—"
+                    em=emoji_m.get(nota,"⬜")
+                    sub=str(rw.get("SubTag","")) if pd.notna(rw.get("SubTag")) else "—"
+                    fila=str(rw.get("Fila","")) if pd.notna(rw.get("Fila")) else "—"
+                    seq=str(rw.get("sequentialId","")) if pd.notna(rw.get("sequentialId")) else "—"
+                    n2v=str(rw.get("N2_Zendesk","")) if pd.notna(rw.get("N2_Zendesk")) else None
+                    n2=f" · N2: <code>{n2v}</code>" if n2v else ""
+                    tme_f=fmt_time(rw.get("TME_seg")) if pd.notna(rw.get("TME_seg")) else "—"
+                    tma_f=fmt_time(rw.get("TMA_seg")) if pd.notna(rw.get("TMA_seg")) else "—"
+                    # CTL do ticket
+                    ctl_info = ctl_ticket_map.get(seq,{})
+                    ctl_html=""
+                    if ctl_info and ctl_info.get("analise_csat"):
+                        ctl_cls={"Inove":"#ffd43b","EstrelaBet":"#4fc3f7","Cliente Discorda":"#ff6b6b"}.get(ctl_info["analise_csat"],"#a8c4e8")
+                        ctl_html=f' · <span style="color:{ctl_cls};font-weight:600">CTL: {ctl_info["analise_csat"]}</span>'
+                        if ctl_info.get("observacao"): ctl_html+=f' <span style="color:#a8c4e8;font-size:.73rem">"{ctl_info["observacao"][:60]}..."</span>'
+                    html+=f"""<div class="tli">
+                        <div class="td">{rw.get('Data','—')} · Ticket: <b>#{seq}</b></div>
+                        <div class="tt">{sub} <span style="color:#7fa8d4;font-weight:400">({fila})</span></div>
+                        <div class="tm">TME: {tme_f} · TMA: {tma_f} · Avaliação: {em} {nota}{n2}{ctl_html}</div>
+                    </div>"""
+                html+="</div>"
+                st.markdown(html,unsafe_allow_html=True)
+                st.download_button("⬇️ Download histórico",to_xl(df_cli),"historico.xlsx",key="dl_cli")
+
     st.markdown("---")
+    st.markdown("#### Clientes com mais atendimentos no período")
+    df_rank=run_query(SQL_CLIENTES_RECORRENTES,params)
+    if not df_rank.empty:
+        st.dataframe(df_rank,use_container_width=True,hide_index=True,height=300)
 
-    for _, row in df.iterrows():
-        cor        = "🟢" if row["status_ctl"] == "Feito" else "🔴"
-        n_str      = nota_str(row.get("nota"))
-        assunto    = row.get("assunto") or "—"
-        analise    = row.get("analise_csat") or "—"
-        data       = limpar_data(row.get("data_ticket"))
-        agente     = row.get("nome_agente_final") or limpar_agente(row.get("agente"))
-        fila       = row.get("depara_fila") or "—"
-        lider      = row.get("lider_final") or "—"
-        comentario = row.get("comentario_cliente") or "—"
+# ── ABA 9: INSIGHTS ──
+with tabs[8]:
+    st.markdown('<div class="ph"><span class="pt">⚡ INSIGHTS & ALERTAS</span><span class="pl">●INOVE</span></div>',unsafe_allow_html=True)
+    if df.empty: st.warning("Sem dados.")
+    else:
+        med_tme=df["TME_segundos"].mean(); std_tme=df["TME_segundos"].std()
+        med_tma=df["TMA_segundos"].mean(); std_tma=df["TMA_segundos"].std()
 
-        data_fmt = pd.to_datetime(row.get("data_ticket"), errors="coerce")
-        data_fmt = data_fmt.strftime("%d/%m/%Y") if pd.notna(data_fmt) else "—"
-        with st.expander(f"{cor} #{row['ticket_id']} — {assunto} — Nota {n_str} — {data_fmt}"):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Dados do ticket**")
-                st.markdown(f"- **Agente:** {agente}")
-                st.markdown(f"- **Líder:** {lider}")
-                st.markdown(f"- **Fila:** {fila}")
-                st.markdown(f"- **Cliente:** {row.get('nome_cliente') or '—'}")
-                st.markdown(f"- **Nota:** {n_str}")
-                st.markdown(f"- **Voz do cliente:** {comentario}")
-            with col2:
-                st.markdown("**Análise close the loop**")
-                st.markdown(f"- **Análise CSAT:** {analise}")
-                st.markdown(f"- **Oportunidade:** {row.get('oportunidade') or '—'}")
-                st.markdown(f"- **Observação:** {row.get('observacao') or '—'}")
-                st.markdown(f"- **Status:** {row.get('status_ctl') or '—'}")
-            if st.button("✏️ Preencher análise", key=f"edit_{row['id']}"):
-                row_dict = row.to_dict()
-                row_dict["data_ticket"] = str(row.get("data_ticket"))
-                st.session_state.update({"pagina":"editar","registro_id":row["id"],"registro_row":row_dict})
-                st.rerun()
+        # ── LINHA 1: Destaques e Ofensores TMA ──
+        c1,c2=st.columns(2)
+        with c1:
+            st.markdown('<h3 style="color:#a7f3d0;font-size:1.1rem;margin-bottom:12px">🏆 Destaques TMA <span style="color:#86efac;font-size:.78rem">(abaixo de 15:00)</span></h3>',unsafe_allow_html=True)
+            ota=df.groupby("Nome_Ag")["TMA_segundos"].agg(["mean","count"]).reset_index()
+            ota.columns=["Nome","med","Qtd"]; ota=ota[ota["Qtd"]>=10]
+            dest_tma=ota[ota["med"]<=META_TMA].sort_values("med")
+            if dest_tma.empty: st.markdown('<div class="ac ac-yellow">⚠️ Nenhum operador dentro da meta TMA</div>',unsafe_allow_html=True)
+            else:
+                for _,r in dest_tma.head(8).iterrows():
+                    exc=((META_TMA-r["med"])/META_TMA*100)
+                    st.markdown(f'<div class="ac ac-green"><b style="color:#ffffff">{r["Nome"]}</b><br><span style="color:#a7f3d0">TMA: {fmt_time(r["med"])} &nbsp;·&nbsp; {exc:.0f}% abaixo da meta &nbsp;·&nbsp; {int(r["Qtd"])} tickets</span></div>',unsafe_allow_html=True)
 
-# ── PÁGINA: EDITAR ────────────────────────────────────────────────────────────
-def pagina_editar():
-    st.title("Preencher análise — Close the Loop")
-    st.markdown("---")
+        with c2:
+            st.markdown('<h3 style="color:#fca5a5;font-size:1.1rem;margin-bottom:12px">⚠️ Ofensores TMA <span style="color:#fde68a;font-size:.78rem">(Meta: 15:00)</span></h3>',unsafe_allow_html=True)
+            off2=ota[ota["med"]>META_TMA].sort_values("med",ascending=False)
+            if off2.empty: st.markdown('<div class="ac ac-green">✅ Todos dentro da meta TMA (15:00)</div>',unsafe_allow_html=True)
+            else:
+                for _,r in off2.head(8).iterrows():
+                    exc=((r["med"]-META_TMA)/META_TMA*100)
+                    cls="ac-red" if r["med"]>META_TMA*1.3 else "ac-yellow"
+                    ic="🔴" if r["med"]>META_TMA*1.3 else "🟡"
+                    st.markdown(f'<div class="ac {cls}">{ic} <b style="color:#ffffff">{r["Nome"]}</b><br><span>TMA: {fmt_time(r["med"])} &nbsp;·&nbsp; +{exc:.0f}% da meta &nbsp;·&nbsp; {int(r["Qtd"])} tickets</span></div>',unsafe_allow_html=True)
 
-    row         = st.session_state.get("registro_row", {})
-    id_registro = st.session_state.get("registro_id")
-
-    n_str      = nota_str(row.get("nota"))
-    data       = limpar_data(row.get("data_ticket"))
-    agente     = row.get("nome_agente_final") or limpar_agente(row.get("agente"))
-    fila       = row.get("depara_fila") or "—"
-    lider      = row.get("lider_final") or "—"
-    comentario = row.get("comentario_cliente") or "—"
-
-    st.markdown("**Dados do ticket**")
-    c1,c2,c3 = st.columns(3)
-    c1.metric("Ticket", f"#{row.get('ticket_id','—')}")
-    c2.metric("Nota",   n_str)
-    c3.metric("Data",   data)
-    c4,c5,c6 = st.columns(3)
-    c4.metric("Agente", agente)
-    c5.metric("Fila",   fila)
-    c6.metric("Líder",  lider)
-    st.markdown(f"**Assunto:** {row.get('assunto') or '—'}")
-    st.markdown(f"**Cliente:** {row.get('nome_cliente') or '—'}")
-
-    if comentario and comentario != "—":
-        st.info(f"💬 **Voz do cliente:** {comentario}")
-
-    st.markdown("---")
-    st.markdown("**Análise close the loop**")
-
-    analise_csat = st.selectbox("Análise CSAT", OPCOES_CSAT,
-        index=OPCOES_CSAT.index(row["analise_csat"]) if row.get("analise_csat") in OPCOES_CSAT else 0)
-
-    # Filtra oportunidades pela análise CSAT selecionada
-    opcoes_oport = OPCOES_OPORTUNIDADE_POR_CSAT.get(analise_csat, OPCOES_OPORTUNIDADE)
-    oport_atual  = row.get("oportunidade") or ""
-    oport_idx    = opcoes_oport.index(oport_atual) if oport_atual in opcoes_oport else 0
-    oportunidade = st.selectbox("Oportunidade", opcoes_oport, index=oport_idx)
-    observacao   = st.text_area("Observação", value=row.get("observacao") or "", height=80)
-    status_ctl   = st.selectbox("Status", OPCOES_STATUS,
-        index=OPCOES_STATUS.index(row["status_ctl"]) if row.get("status_ctl") in OPCOES_STATUS else 0)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("💾 Salvar análise", use_container_width=True):
-            atualizar_analise(id_registro, analise_csat, oportunidade, observacao, status_ctl, st.session_state["lider"])
-            st.success("Análise salva!")
-            st.session_state["pagina"] = "fila"
-            st.rerun()
-    with c2:
-        if st.button("← Voltar", use_container_width=True):
-            st.session_state["pagina"] = "fila"
-            st.rerun()
-
-# ── ROTEADOR ──────────────────────────────────────────────────────────────────
-def main():
-    st.set_page_config(page_title="Close the Loop — EB", page_icon="🔁", layout="wide")
-
-    if "logado" not in st.session_state:
-        st.session_state["logado"] = False
-    if "pagina" not in st.session_state:
-        st.session_state["pagina"] = "dashboard"
-
-    if not st.session_state["logado"]:
-        tela_login()
-        return
-
-    with st.sidebar:
-        st.markdown("### 🔁 Close the Loop")
-        st.markdown(f"👤 {st.session_state['lider']}")
         st.markdown("---")
-        if st.button("📊 Dashboard", use_container_width=True):
-            st.session_state["pagina"] = "dashboard"
-            st.rerun()
-        if st.button("📋 Fila de DSATs", use_container_width=True):
-            st.session_state["pagina"] = "fila"
-            st.rerun()
+        # ── LINHA 2: Destaques e Ofensores CSAT ──
+        c1,c2=st.columns(2)
+        with c1:
+            st.markdown('<h3 style="color:#a7f3d0;font-size:1.1rem;margin-bottom:12px">🏆 Destaques CSAT <span style="color:#86efac;font-size:.78rem">(Meta: 90%)</span></h3>',unsafe_allow_html=True)
+            oc=df.groupby("Nome_Ag").agg(Aval=("humanConversationEvaluation",lambda x:x.isin(["1","2","3","4","5"]).sum()),
+                CSAT=("humanConversationEvaluation",lambda x:x.isin(["4","5"]).sum())).reset_index()
+            oc=oc[oc["Aval"]>=10]; oc["pct"]=oc["CSAT"]/oc["Aval"]
+            dest=oc[oc["pct"]>=META_CSAT].sort_values("pct",ascending=False)
+            if dest.empty: st.markdown('<div class="ac ac-yellow">⚠️ Nenhum operador atingiu 90% no período</div>',unsafe_allow_html=True)
+            else:
+                for _,r in dest.head(8).iterrows():
+                    st.markdown(f'<div class="ac ac-green"><b style="color:#ffffff">{r["Nome_Ag"]}</b><br><span style="color:#a7f3d0">CSAT: {r["pct"]:.1%} &nbsp;·&nbsp; {int(r["Aval"])} avaliações</span></div>',unsafe_allow_html=True)
+
+        with c2:
+            st.markdown('<h3 style="color:#fca5a5;font-size:1.1rem;margin-bottom:12px">😟 Ofensores CSAT <span style="color:#fca5a5;font-size:.78rem">(abaixo de 70%)</span></h3>',unsafe_allow_html=True)
+            off_c=oc[oc["pct"]<0.70].sort_values("pct")
+            if off_c.empty: st.markdown('<div class="ac ac-green">✅ Todos com CSAT ≥ 70%</div>',unsafe_allow_html=True)
+            else:
+                for _,r in off_c.head(8).iterrows():
+                    cls="ac-red" if r["pct"]<0.60 else "ac-yellow"; ic="🔴" if r["pct"]<0.60 else "🟡"
+                    st.markdown(f'<div class="ac {cls}">{ic} <b style="color:#ffffff">{r["Nome_Ag"]}</b><br><span>CSAT: {r["pct"]:.1%} &nbsp;·&nbsp; {int(r["Aval"])} avaliações</span></div>',unsafe_allow_html=True)
+
         st.markdown("---")
-        if st.button("Sair"):
-            st.session_state.clear()
-            st.rerun()
+        # ── LINHA 3: CTL Ofensores e Destaques ──
+        c1,c2=st.columns(2)
+        with c1:
+            st.markdown('<h3 style="color:#fca5a5;font-size:1.1rem;margin-bottom:12px">🔴 Ofensores CTL <span style="color:#fde68a;font-size:.78rem">(maior % Inove = pior condução)</span></h3>',unsafe_allow_html=True)
+            if inove_map:
+                ctl_df=pd.DataFrame([(k,v) for k,v in inove_map.items() if pd.notna(v)],columns=["email","pct_inove"])
+                ctl_df["Nome"]=ctl_df["email"].apply(nome_ag)
+                ctl_df=ctl_df.sort_values("pct_inove",ascending=False)
+                off_ctl=ctl_df[ctl_df["pct_inove"]>0.10]
+                if off_ctl.empty: st.markdown('<div class="ac ac-green">✅ Nenhum operador com % Inove acima de 10%</div>',unsafe_allow_html=True)
+                else:
+                    for _,r in off_ctl.head(8).iterrows():
+                        st.markdown(f'<div class="ac ac-red">🔴 <b style="color:#ffffff">{r["Nome"]}</b><br><span>% Inove: {r["pct_inove"]:.1%} — falha na condução do atendimento</span></div>',unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="ac ac-yellow">⚠️ Dados CTL não disponíveis no período</div>',unsafe_allow_html=True)
 
-    pagina = st.session_state["pagina"]
-    if pagina == "dashboard":   pagina_dashboard()
-    elif pagina == "fila":      pagina_fila()
-    elif pagina == "editar":    pagina_editar()
+        with c2:
+            st.markdown('<h3 style="color:#a7f3d0;font-size:1.1rem;margin-bottom:12px">🏆 Destaques CTL <span style="color:#86efac;font-size:.78rem">(menor % Inove = melhor condução)</span></h3>',unsafe_allow_html=True)
+            if inove_map:
+                dest_ctl=ctl_df[ctl_df["pct_inove"]<=0.05].sort_values("pct_inove")
+                if dest_ctl.empty: st.markdown('<div class="ac ac-yellow">⚠️ Nenhum operador com % Inove ≤ 5%</div>',unsafe_allow_html=True)
+                else:
+                    for _,r in dest_ctl.head(8).iterrows():
+                        st.markdown(f'<div class="ac ac-green"><b style="color:#ffffff">{r["Nome"]}</b><br><span style="color:#a7f3d0">% Inove: {r["pct_inove"]:.1%} — boa condução de atendimento</span></div>',unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="ac ac-yellow">⚠️ Dados CTL não disponíveis no período</div>',unsafe_allow_html=True)
 
-if __name__ == "__main__":
-    main()
+        st.markdown("---")
+        # ── LINHA 4: Rechamada + Picos ──
+        c1,c2=st.columns(2)
+        with c1:
+            st.markdown('<h3 style="color:#bfdbfe;font-size:1.1rem;margin-bottom:12px">🔁 Rechamada por TAG (outliers)</h3>',unsafe_allow_html=True)
+            if not df_rec_f.empty and "Depara_TAG1" in df_rec_f.columns:
+                rt2=df_rec_f.groupby("Depara_TAG1").agg(Rec=("Eh_Rechamada","sum"),B=("sequentialId","count")).reset_index()
+                rt2=rt2[rt2["B"]>=20]; rt2["pct"]=rt2["Rec"]/rt2["B"]
+                mr=rt2["pct"].mean(); sr=rt2["pct"].std()
+                outr=rt2[rt2["pct"]>(mr+sr)].sort_values("pct",ascending=False)
+                if outr.empty: st.markdown('<div class="ac ac-green">✅ Nenhuma TAG com rechamada anômala</div>',unsafe_allow_html=True)
+                else:
+                    for _,r in outr.head(8).iterrows():
+                        st.markdown(f'<div class="ac ac-yellow">🟡 <b style="color:#ffffff">{r["Depara_TAG1"]}</b><br><span>{r["pct"]:.1%} rechamada &nbsp;·&nbsp; média: {mr:.1%} &nbsp;·&nbsp; {int(r["B"])} tickets</span></div>',unsafe_allow_html=True)
+
+        with c2:
+            st.markdown('<h3 style="color:#bfdbfe;font-size:1.1rem;margin-bottom:12px">📈 Picos de Volume (outliers diários)</h3>',unsafe_allow_html=True)
+            vdt=df.groupby(["Depara_TAG1","Depara_Data"]).size().reset_index(name="Qtd")
+            st2=vdt.groupby("Depara_TAG1")["Qtd"].agg(["mean","std"]).reset_index()
+            st2.columns=["TAG","med","std"]
+            mx=vdt.groupby("Depara_TAG1")["Qtd"].max().reset_index(name="max"); mx.columns=["TAG","max"]
+            st2=st2.merge(mx,on="TAG"); st2["lim"]=st2["med"]+2*st2["std"]
+            picos=st2[st2["max"]>st2["lim"]].sort_values("max",ascending=False)
+            if picos.empty: st.markdown('<div class="ac ac-green">✅ Nenhum pico de volume</div>',unsafe_allow_html=True)
+            else:
+                for _,r in picos.head(8).iterrows():
+                    d=((r["max"]-r["med"])/max(r["med"],1)*100)
+                    st.markdown(f'<div class="ac ac-yellow">🟡 <b style="color:#ffffff">{r["TAG"]}</b><br><span>Pico: {int(r["max"])}/dia &nbsp;·&nbsp; +{d:.0f}% da média ({r["med"]:.0f}/dia)</span></div>',unsafe_allow_html=True)
+
+        st.markdown("---")
+        # ── COMPARATIVO: período filtrado vs período anterior equivalente ──
+        st.markdown('<h3 style="color:#e0ecff;font-size:1.1rem;margin-bottom:12px">📅 Comparativo — Período Filtrado vs Anterior Equivalente</h3>',unsafe_allow_html=True)
+        # calcula período anterior com mesmo número de dias
+        n_dias = (data_fim - data_inicio).days + 1
+        ini_ant = data_inicio - timedelta(days=n_dias)
+        fim_ant = data_inicio - timedelta(days=1)
+
+        def fperi(di, df_):
+            if df_raw.empty: return pd.DataFrame()
+            return df_raw[
+                (pd.to_datetime(df_raw["Depara_Data"]) >= pd.Timestamp(di)) &
+                (pd.to_datetime(df_raw["Depara_Data"]) <= pd.Timestamp(df_))
+            ]
+
+        df_at = df.copy()  # período atual já filtrado
+        df_ant = aplica(fperi(ini_ant, fim_ant))  # período anterior com mesmos filtros
+
+        def skpi2(lbl, va, vp, maior_melhor=True, fmt_fn=None):
+            if fmt_fn:
+                fa = fmt_fn(va); fp = fmt_fn(vp)
+            elif isinstance(va, float) and va < 2:
+                fa = f"{va:.1%}"; fp = f"{vp:.1%}"
+            else:
+                fa = f"{int(va):,}"; fp = f"{int(vp):,}"
+            delta = va - vp
+            positivo = delta >= 0
+            bom = positivo if maior_melhor else not positivo
+            cor = "#69db7c" if bom else "#ff6b6b"
+            if fmt_fn:
+                ds = f"+{fmt_fn(abs(delta))}" if positivo else f"-{fmt_fn(abs(delta))}"
+            elif isinstance(va, float) and va < 2:
+                ds = (f"+{delta:.1%}" if positivo else f"{delta:.1%}")
+            else:
+                ds = (f"+{int(delta):,}" if positivo else f"{int(delta):,}")
+            return f'<div class="kc"><div class="kl">{lbl}</div><div class="kv">{fa}</div><div class="kp" style="color:{cor}">{ds} vs período ant.</div><div style="color:#7fa8d4;font-size:.68rem">ant: {fp}</div></div>'
+
+        t_at2=len(df_at); t_ant=len(df_ant)
+        av_at=df_at["humanConversationEvaluation"].isin(["1","2","3","4","5"]).sum() if not df_at.empty else 0
+        av_ant2=df_ant["humanConversationEvaluation"].isin(["1","2","3","4","5"]).sum() if not df_ant.empty else 0
+        cs_at=df_at["humanConversationEvaluation"].isin(["4","5"]).sum()/max(av_at,1) if not df_at.empty else 0
+        cs_ant=df_ant["humanConversationEvaluation"].isin(["4","5"]).sum()/max(av_ant2,1) if not df_ant.empty else 0
+        tme_at=df_at["TME_segundos"].mean() if not df_at.empty else 0
+        tme_ant=df_ant["TME_segundos"].mean() if not df_ant.empty else 0
+        tma_at=df_at["TMA_segundos"].mean() if not df_at.empty else 0
+        tma_ant=df_ant["TMA_segundos"].mean() if not df_ant.empty else 0
+
+        st.markdown(f"""<div class="kr">
+            {skpi2("Tickets",t_at2,t_ant,maior_melhor=True)}
+            {skpi2("% CSAT",cs_at,cs_ant,maior_melhor=True)}
+            {skpi2("TME",tme_at,tme_ant,maior_melhor=False,fmt_fn=fmt_time)}
+            {skpi2("TMA",tma_at,tma_ant,maior_melhor=False,fmt_fn=fmt_time)}
+        </div>""",unsafe_allow_html=True)
+        st.caption(f"📅 Período atual: {data_inicio} → {data_fim} &nbsp;|&nbsp; Período anterior: {ini_ant} → {fim_ant}")
+
+        st.markdown('<h3 style="color:#bfdbfe;font-size:1.1rem;margin-top:16px;margin-bottom:12px">🏆 Top 10 TAGs — Período Atual (com submotivos)</h3>',unsafe_allow_html=True)
+        if not df_at.empty:
+            top10=df_at.groupby("Depara_TAG1").size().reset_index(name="Qtd").sort_values("Qtd",ascending=False).head(10)
+            for _,rt in top10.iterrows():
+                pct_t=rt["Qtd"]/len(df_at)*100
+                st.markdown(f'<div class="ac ac-blue"><b style="color:#ffffff">📌 {rt["Depara_TAG1"]}</b> &nbsp;·&nbsp; <span style="color:#bfdbfe">{int(rt["Qtd"])} tickets ({pct_t:.1f}%)</span></div>',unsafe_allow_html=True)
+                subs=df_at[df_at["Depara_TAG1"]==rt["Depara_TAG1"]].groupby("Depara_SubTag").size().reset_index(name="n").sort_values("n",ascending=False).head(5)
+                for _,rs in subs.iterrows():
+                    st.markdown(f'<div style="padding:2px 0 2px 28px;color:#93c5fd;font-size:.82rem">↳ {rs["Depara_SubTag"]} — {int(rs["n"])} ({rs["n"]/rt["Qtd"]*100:.1f}%)</div>',unsafe_allow_html=True)
+
+# ── ABA 10: REPORT VIP ──
+with tabs[9]:
+    st.markdown('<div class="ph"><span class="pt">📋 REPORT VIP DIÁRIO</span><span class="pl">W●INOVE</span></div>',unsafe_allow_html=True)
+    data_rep=st.date_input("Data do report",value=date.today()-timedelta(days=1),key="dt_rep")
+    df_vip=df_raw[df_raw["Depara_Fila"]=="VIP"].copy() if not df_raw.empty else pd.DataFrame()
+    df_vd=df_vip[pd.to_datetime(df_vip["Depara_Data"])==pd.Timestamp(data_rep)] if not df_vip.empty else pd.DataFrame()
+
+    if df_vd.empty: st.warning(f"Sem dados VIP para {data_rep}.")
+    else:
+        t_v=len(df_vd)
+        av_v=df_vd["humanConversationEvaluation"].isin(["1","2","3","4","5"]).sum()
+        cs_v=df_vd["humanConversationEvaluation"].isin(["4","5"]).sum()
+        tme_v=df_vd["TME_segundos"].mean(); tma_v=df_vd["TMA_segundos"].mean()
+        cs_pv=cs_v/av_v if av_v>0 else 0
+        dr_vip=df_rec[(df_rec["Depara_Fila"]=="VIP")&(pd.to_datetime(df_rec["Depara_Data"])==pd.Timestamp(data_rep))] if not df_rec.empty else pd.DataFrame()
+        fcr_v=dr_vip["Eh_FCR"].sum()/len(dr_vip) if len(dr_vip)>0 else 0
+        top_m=df_vd.groupby("Depara_SubTag").size().reset_index(name="n")
+        top_m["%"]=top_m["n"]/t_v*100
+        top_m=top_m.sort_values("n",ascending=False).head(5)
+        motivos="\n".join([f"{r['Depara_SubTag']} - {r['%']:.2f}% ({int(r['n'])})" for _,r in top_m.iterrows()])
+        cs_ico="✅" if cs_pv>=META_CSAT else "🚨"
+        tma_ico="✅" if tma_v<=META_TMA else "⚠️"
+        fcr_ico="✅" if fcr_v>=0.70 else "⚠️"
+        report=f"""📊 Report Diário VIP – Visão Geral | {data_rep.strftime('%d/%b')}
+
+📋 Demanda {t_v}
+{fcr_ico} FCR - {fcr_v:.0%}
+{cs_ico} CSAT {cs_pv:.0%}
+⏱️ TME {fmt_time(tme_v)}
+{tma_ico} TMA {fmt_time(tma_v)}
+
+📌 Principais Motivos
+{motivos}"""
+
+        st.markdown("#### Preview")
+        st.markdown(f'<div class="rb">{report}</div>',unsafe_allow_html=True)
+        st.text_area("📋 Copiar:",value=report,height=250,key="rep_txt")
+        st.download_button("⬇️ Download .txt",report.encode(),f"report_vip_{data_rep}.txt",key="dl_rep")
+
+        st.markdown("---")
+        c1,c2,c3=st.columns(3)
+        c1.metric("Tickets VIP",t_v); c2.metric("CSAT",f"{cs_pv:.1%}"); c3.metric("TMA",fmt_time(tma_v))
+        st.markdown("#### Top Motivos detalhados (TAG → SubTag)")
+        drill_tag_subtag(df_vd, key_prefix="rep_drill")
+
+
+# ── ABA 11: DIÁRIO DE BORDO + IA ──
+with tabs[10]:
+    st.markdown('<div class="ph"><span class="pt">📓 DIÁRIO DE BORDO + IA</span><span class="pl">●INOVE</span></div>',unsafe_allow_html=True)
+
+    # Carregar diário
+    with st.spinner("Carregando diário de bordo..."):
+        df_diario, err_diario = get_diario()
+
+    if err_diario:
+        st.error(f"Erro ao carregar diário: {err_diario}")
+        st.info("Verifique se os secrets GOOGLE_CREDENTIALS e GOOGLE_SHEETS_ID estão configurados no Streamlit.")
+    elif df_diario.empty:
+        st.warning("Nenhum registro encontrado no diário de bordo.")
+    else:
+        # ── FILTROS ──
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            di_diario = st.date_input("De", value=data_inicio, key="di_diario")
+        with fc2:
+            df_diario_fim = st.date_input("Até", value=data_fim, key="df_diario")
+        with fc3:
+            lideres_diario = ["Todos"] + sorted(df_diario["lider"].dropna().unique().tolist())
+            lider_diario = st.multiselect("Líder", lideres_diario, default=["Todos"], key="lider_diario")
+
+        # Filtrar
+        mask = (df_diario["data"] >= di_diario) & (df_diario["data"] <= df_diario_fim)
+        df_d = df_diario[mask].copy()
+        if "Todos" not in lider_diario and lider_diario:
+            df_d = df_d[df_d["lider"].isin(lider_diario)]
+
+        if df_d.empty:
+            st.warning("Sem registros no período/filtro selecionado.")
+        else:
+            st.caption(f"📝 {len(df_d)} registros encontrados | {df_d['data'].nunique()} dias | {df_d['lider'].nunique()} líderes")
+
+            # ── TABELA DE OCORRÊNCIAS ──
+            with st.expander("📋 Ver todas as ocorrências do período", expanded=False):
+                df_show = df_d[["data","dia_semana","lider","ocorrencia"]].rename(columns={
+                    "data":"Data","dia_semana":"Dia","lider":"Líder","ocorrencia":"Ocorrência"
+                })
+                st.dataframe(df_show, use_container_width=True, hide_index=True, height=350)
+                st.download_button("⬇️ Download Excel", to_xl(df_show), "diario.xlsx", key="dl_diario")
+
+            # ── ANÁLISE COM IA ──
+            st.markdown("---")
+            st.markdown('<h3 style="color:#e0ecff;font-size:1.1rem;margin-bottom:12px">🤖 Análise com IA — Cruzamento Diário + Indicadores</h3>',unsafe_allow_html=True)
+
+            # Indicadores do período para cruzar
+            df_ind = aplica(df_raw.copy()) if not df_raw.empty else pd.DataFrame()
+            if not df_ind.empty:
+                mask_ind = (pd.to_datetime(df_ind["Depara_Data"]) >= pd.Timestamp(di_diario)) &                            (pd.to_datetime(df_ind["Depara_Data"]) <= pd.Timestamp(df_diario_fim))
+                df_ind = df_ind[mask_ind]
+
+            col_btn, col_info = st.columns([1, 3])
+            with col_info:
+                st.markdown(f'<div class="ac ac-blue">📊 A IA vai analisar <b>{len(df_d)}</b> ocorrências do diário + indicadores de <b>{len(df_ind)}</b> atendimentos do mesmo período</div>',unsafe_allow_html=True)
+
+            with col_btn:
+                gerar_ia = st.button("🤖 Gerar análise", type="primary", key="btn_ia_diario")
+
+            if gerar_ia:
+                if not df_d.empty:
+                    with st.spinner("Analisando com IA... (pode levar ~15 segundos)"):
+                        try:
+                            import anthropic
+
+                            # Preparar contexto do diário (máx 60 ocorrências)
+                            ocorrencias_sample = df_d.head(60)
+                            diario_txt = ""
+                            for _, r in ocorrencias_sample.iterrows():
+                                d=str(r["data"]); l=str(r["lider"]); o=str(r["ocorrencia"])[:300]
+                                diario_txt += f"[{d} - {l}]: {o}\n\n"
+
+                            # Preparar indicadores resumidos por dia
+                            if not df_ind.empty:
+                                ind_dia = df_ind.groupby("Depara_Data").agg(
+                                    Tickets=("sequentialId","count"),
+                                    CSAT=("humanConversationEvaluation", lambda x: x.isin(["4","5"]).sum()),
+                                    Aval=("humanConversationEvaluation", lambda x: x.isin(["1","2","3","4","5"]).sum()),
+                                    TME=("TME_segundos","mean"),
+                                    TMA=("TMA_segundos","mean"),
+                                ).reset_index()
+                                ind_dia["pct_csat"] = ind_dia["CSAT"] / ind_dia["Aval"].replace(0, float("nan"))
+                                ind_txt = ""
+                                for _, r in ind_dia.iterrows():
+                                    dd=str(r["Depara_Data"]); tk=int(r["Tickets"]); pc=r["pct_csat"]; tm=fmt_time(r["TME"]); ta=fmt_time(r["TMA"])
+                                    ind_txt += f"[{dd}] Tickets: {tk} | CSAT: {pc:.1%} | TME: {tm} | TMA: {ta}\n"
+                            else:
+                                ind_txt = "Dados de indicadores não disponíveis para o período."
+
+                            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_KEY",""))
+                            msg = client.messages.create(
+                                model="claude-sonnet-4-20250514",
+                                max_tokens=1500,
+                                messages=[{
+                                    "role": "user",
+                                    "content": f"""Você é um analista especialista em operações de atendimento ao cliente.
+Analise as ocorrências do diário de bordo dos líderes e os indicadores operacionais do mesmo período.
+
+=== DIÁRIO DE BORDO (ocorrências registradas pelos líderes) ===
+{diario_txt}
+
+=== INDICADORES OPERACIONAIS POR DIA ===
+{ind_txt}
+
+Por favor, forneça uma análise executiva estruturada com:
+
+1. **PRINCIPAIS TEMAS RECORRENTES** (máx 5): quais assuntos aparecem com mais frequência nas ocorrências dos líderes?
+
+2. **CORRELAÇÕES IDENTIFICADAS**: existe relação entre o que os líderes reportaram e os indicadores? (ex: dias com ocorrências de "fraude" coincidem com queda de CSAT? Picos de fila aparecem em dias específicos?)
+
+3. **PADRÕES HISTÓRICOS**: há recorrências em dias da semana, períodos do mês ou situações que se repetem?
+
+4. **IMPACTOS NOS INDICADORES**: quais ocorrências tiveram maior impacto visível nos números?
+
+5. **RECOMENDAÇÕES** (máx 3 ações prioritárias): baseado nos padrões identificados, o que deveria ser monitorado ou ajustado?
+
+Seja objetivo e direto. Use dados específicos quando possível."""
+                                }]
+                            )
+
+                            resultado = msg.content[0].text
+
+                            st.markdown('<div style="background:#0a1628;border:1px solid #1e3a70;border-radius:12px;padding:24px;margin-top:12px">', unsafe_allow_html=True)
+                            st.markdown(resultado)
+                            st.markdown('</div>', unsafe_allow_html=True)
+
+                            # Download do relatório
+                            st.download_button(
+                                "⬇️ Download análise (.txt)",
+                                resultado.encode(),
+                                f"analise_diario_{di_diario}_{df_diario_fim}.txt",
+                                key="dl_ia_diario"
+                            )
+
+                        except Exception as e:
+                            st.error(f"Erro na análise IA: {str(e)}")
+                else:
+                    st.warning("Sem ocorrências para analisar no período selecionado.")
+
+            # ── LINHA DO TEMPO DAS OCORRÊNCIAS ──
+            st.markdown("---")
+            st.markdown('<h3 style="color:#e0ecff;font-size:1.1rem;margin-bottom:12px">📅 Linha do Tempo das Ocorrências</h3>',unsafe_allow_html=True)
+
+            # Cruzar com indicadores por dia
+            if not df_ind.empty and not df_d.empty:
+                dias_unicos = sorted(df_d["data"].unique(), reverse=True)
+                for dia in dias_unicos[:14]:  # últimos 14 dias com registro
+                    ocorr_dia = df_d[df_d["data"] == dia]
+                    ind_dia2 = df_ind[pd.to_datetime(df_ind["Depara_Data"]) == pd.Timestamp(dia)]
+
+                    # Indicadores do dia
+                    if not ind_dia2.empty:
+                        t = len(ind_dia2)
+                        av = ind_dia2["humanConversationEvaluation"].isin(["1","2","3","4","5"]).sum()
+                        cs = ind_dia2["humanConversationEvaluation"].isin(["4","5"]).sum()
+                        cs_p = cs/av if av > 0 else 0
+                        tme_d = ind_dia2["TME_segundos"].mean()
+                        tma_d = ind_dia2["TMA_segundos"].mean()
+                        ind_badge = f'<span style="color:#4fc3f7">📊 {t} tickets | CSAT: {cs_p:.1%} | TME: {fmt_time(tme_d)} | TMA: {fmt_time(tma_d)}</span>'
+                        # Alertas automáticos
+                        alertas = []
+                        if cs_p < 0.80 and av >= 5: alertas.append("⚠️ CSAT baixo")
+                        if pd.notna(tma_d) and tma_d > 20*60: alertas.append("⚠️ TMA alto")
+                        alerta_str = " ".join(alertas)
+                    else:
+                        ind_badge = '<span style="color:#7fa8d4">📊 Sem dados de indicadores</span>'
+                        alerta_str = ""
+
+                    dia_fmt = dia.strftime("%d/%m/%Y (%a)")
+                    st.markdown(f'<div style="background:#0d1b3e;border:1px solid #1e3a70;border-radius:8px;padding:12px;margin-bottom:8px">' +
+                        f'<div style="color:#a8c4e8;font-size:.78rem;font-weight:600">{dia_fmt} {alerta_str}</div>' +
+                        f'<div style="margin:4px 0 8px 0">{ind_badge}</div>',
+                        unsafe_allow_html=True)
+
+                    for _, oc in ocorr_dia.iterrows():
+                        st.markdown(
+                            f'<div style="border-left:3px solid #1e3a70;padding:4px 0 4px 12px;margin-bottom:4px">' +
+                            f'<span style="color:#7fa8d4;font-size:.73rem">{oc["lider"]}</span><br>' +
+                            f'<span style="color:#c8d8f0;font-size:.82rem">{oc["ocorrencia"][:400]}</span>' +
+                            '</div>',
+                            unsafe_allow_html=True)
+
+                    st.markdown('</div>', unsafe_allow_html=True)
