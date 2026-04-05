@@ -16,7 +16,6 @@ ANTHROPIC_KEY = st.secrets.get("ANTHROPIC_KEY", "")
 USUARIOS = {
     "gestao":             {"senha": "ctl2026",    "lider": "Geral"},
     "admin":              {"senha": "Henry@2026", "lider": "Admin"},
-    "danny":              {"senha": "Estrela123", "lider": "ControlDesk"},
     "robert.borges":      {"senha": "Estrela123", "lider": "Robert Borges"},
     "mateus.santana":     {"senha": "Estrela123", "lider": "Mateus Santana"},
     "isabel.silva":       {"senha": "Estrela123", "lider": "Isabel Silva"},
@@ -83,6 +82,66 @@ OPCOES_OPORTUNIDADE = [
     "Cliente Frustrado BLIP - Avaliação dada para retorno ao chat após inatividade",
     "Cliente Frustrado – Discordancia do processos operacionais",
 ]
+
+# Oportunidades filtradas por categoria de análise CSAT
+OPCOES_OPORTUNIDADE_POR_CSAT = {
+    "EstrelaBet": [
+        "",
+        "EstrelaBet - Bônus - Não Creditado",
+        "EstrelaBet - Bônus - Ganho Maximo",
+        "EstrelaBet - Bônus - App Dentro do prazo",
+        "EstrelaBet - Bônus - App Fora do prazo",
+        "EstrelaBet - Bônus - Cashout",
+        "EstrelaBet - Bônus - Vencido",
+        "EstrelaBet - Bônus - Aposta Devolvida/Adiada",
+        "EstrelaBet - Bônus - Roleta Gratis",
+        "EstrelaBet - Bônus - Roleta Gratis (FRAUDE)",
+        "EstrelaBet - N2 - Fora do prazo",
+        "EstrelaBet - N2 - Resposta não resolutiva",
+        "EstrelaBet - N2 - Não concorda com o prazo",
+        "EstrelaBet - SB - Recalculo de odd",
+        "EstrelaBet - SB - Aposta Devolvida",
+        "EstrelaBet - SB - Limitação Alternar",
+        "EstrelaBet - SB - Rollback",
+        "EstrelaBet - VIP - Quero bônus",
+        "EstrelaBet - Site - Cadastro de endereço",
+        "EstrelaBet - Site - Jogos fora do ar",
+        "EstrelaBet - Site - Instabilidade de Login",
+        "EstrelaBet - APP - Jogos fora do ar",
+        "EstrelaBet - APP - Instabilidade de Login",
+        "EstrelaBet - KYC - Erro KYC",
+        "EstrelaBet - Saque - Co_post_start",
+        "EstrelaBet - Saque - Chave Pix banco lista restritiva",
+        "EstrelaBet - Saque - Excedeu Limite Diario",
+        "EstrelaBet - Saque - Alteração chave PIX",
+        "EstrelaBet - Closed - Ludopatia",
+        "EstrelaBet - Closed - Abuso de Bonus",
+        "EstrelaBet - Encerramento - Desrespeito",
+        "EstrelaBet - BLIP - Avaliação indevida - Blip Registrou Nota Errada",
+        "EstrelaBet - BLIP - Avaliação indevida - Cliente Clicou Errado",
+        "EstrelaBet - Site - Sistema Estrela Fora do Ar",
+        "EstrelaBet - Site - Bloqueio de Saque Nacional",
+    ],
+    "Inove": [
+        "",
+        "Inove - Postura",
+        "Inove - Condução",
+        "Inove - Encerramento",
+        "Inove - Dominio Fluxo",
+    ],
+    "Cliente Discorda": [
+        "",
+        "Cliente Frustrado – Resistência a Prazos Operacionais",
+        "Cliente Frustrado – Discordância da Análise (Sem Fundamentação Clara)",
+        "Cliente Frustrado – Negativa de Bônus",
+        "Cliente Frustrado – Negativa de Reembolso por Perda",
+        "Cliente Frustrado – Discordância das Regras de Aposta",
+        "Cliente Frustrado – Avaliação Negativa por Tempo de Retorno no Chat",
+        "Cliente Frustrado – Cliente Recorrente / Contumaz",
+        "Cliente Frustrado BLIP - Avaliação dada para retorno ao chat após inatividade",
+        "Cliente Frustrado – Discordancia do processos operacionais",
+    ],
+}
 
 def primeiro_dia_mes():
     hoje = date.today()
@@ -715,9 +774,12 @@ def pagina_editar():
 
     analise_csat = st.selectbox("Análise CSAT", OPCOES_CSAT,
         index=OPCOES_CSAT.index(row["analise_csat"]) if row.get("analise_csat") in OPCOES_CSAT else 0)
+
+    # Filtra oportunidades pela análise CSAT selecionada
+    opcoes_oport = OPCOES_OPORTUNIDADE_POR_CSAT.get(analise_csat, OPCOES_OPORTUNIDADE)
     oport_atual  = row.get("oportunidade") or ""
-    oport_idx    = OPCOES_OPORTUNIDADE.index(oport_atual) if oport_atual in OPCOES_OPORTUNIDADE else 0
-    oportunidade = st.selectbox("Oportunidade", OPCOES_OPORTUNIDADE, index=oport_idx)
+    oport_idx    = opcoes_oport.index(oport_atual) if oport_atual in opcoes_oport else 0
+    oportunidade = st.selectbox("Oportunidade", opcoes_oport, index=oport_idx)
     observacao   = st.text_area("Observação", value=row.get("observacao") or "", height=80)
     status_ctl   = st.selectbox("Status", OPCOES_STATUS,
         index=OPCOES_STATUS.index(row["status_ctl"]) if row.get("status_ctl") in OPCOES_STATUS else 0)
